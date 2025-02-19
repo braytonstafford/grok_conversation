@@ -1,24 +1,16 @@
 generate_image:
-  name: "generate image"
-  description: "Turn a prompt into an image"
   fields:
     config_entry:
-      name: "Config Entry"
-      description: "The config entry to use for this action"
       required: true
       selector:
         config_entry:
           integration: grok_conversation
     prompt:
-      name: "Prompt"
-      description: "The text to turn into an image"
       required: true
       selector:
         text:
           multiline: true
     size:
-      name: "Size"
-      description: "The size of the image to generate"
       required: false
       example: "1024x1024"
       default: "1024x1024"
@@ -29,8 +21,6 @@ generate_image:
             - "1024x1792"
             - "1792x1024"
     quality:
-      name: "Quality"
-      description: "The quality of the image that will be generated"
       required: false
       example: "standard"
       default: "standard"
@@ -40,8 +30,6 @@ generate_image:
             - "standard"
             - "hd"
     style:
-      name: "Style"
-      description: "The style of the generated image"
       required: false
       example: "vivid"
       default: "vivid"

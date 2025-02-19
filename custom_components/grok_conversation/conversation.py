@@ -1,13 +1,15 @@
-"""Conversation support for Grok."""
+"""Conversation support for OpenAI."""
 
-from collections.abc import Callable
+from collections.abc import AsyncGenerator, Callable
 import json
 from typing import Any, Literal, cast
 
 import openai
+from openai._streaming import AsyncStream
 from openai._types import NOT_GIVEN
 from openai.types.chat import (
     ChatCompletionAssistantMessageParam,
+    ChatCompletionChunk,
     ChatCompletionMessage,
     ChatCompletionMessageParam,
     ChatCompletionMessageToolCallParam,
@@ -31,12 +33,14 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
+    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
     LOGGER,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
+    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
@@ -68,6 +72,44 @@ def _format_tool(
     return ChatCompletionToolParam(type="function", function=tool_spec)
 
 
+def _convert_content_to_param(
+    content: conversation.Content,
+) -> ChatCompletionMessageParam:
+    """Convert any native chat message for this agent to the native format."""
+    if content.role == "tool_result":
+        assert type(content) is conversation.ToolResultContent
+        return ChatCompletionToolMessageParam(
+            role="tool",
+            tool_call_id=content.tool_call_id,
+            content=json.dumps(content.tool_result),
+        )
+    if content.role != "assistant" or not content.tool_calls:  # type: ignore[union-attr]
+        role = content.role
+        if role == "system":
+            role = "developer"
+        return cast(
+            ChatCompletionMessageParam,
+            {"role": content.role, "content": content.content},  # type: ignore[union-attr]
+        )
+
+    # Handle the Assistant content including tool calls.
+    assert type(content) is conversation.AssistantContent
+    return ChatCompletionAssistantMessageParam(
+        role="assistant",
+        content=content.content,
+        tool_calls=[
+            ChatCompletionMessageToolCallParam(
+                id=tool_call.id,
+                function=Function(
+                    arguments=json.dumps(tool_call.tool_args),
+                    name=tool_call.tool_name,
+                ),
+                type="function",
+            )
+            for tool_call in content.tool_calls
+        ],
+    )
+
 def _message_convert(message: ChatCompletionMessage) -> ChatCompletionMessageParam:
     """Convert from class to TypedDict."""
     tool_calls: list[ChatCompletionMessageToolCallParam] = []
@@ -91,7 +133,6 @@ def _message_convert(message: ChatCompletionMessage) -> ChatCompletionMessagePar
         param["tool_calls"] = tool_calls
     return param
 
-
 def _chat_message_convert(
     message: conversation.Content
     | conversation.NativeContent[ChatCompletionMessageParam],
@@ -109,7 +150,7 @@ def _chat_message_convert(
 class OpenAIConversationEntity(
     conversation.ConversationEntity, conversation.AbstractConversationAgent
 ):
-    """Grok conversation agent."""
+    """OpenAI conversation agent."""
 
     _attr_has_entity_name = True
     _attr_name = None

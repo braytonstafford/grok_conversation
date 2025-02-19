@@ -1,4 +1,4 @@
-"""The Grok Conversation integration."""
+"""The OpenAI Conversation integration."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ type OpenAIConfigEntry = ConfigEntry[openai.AsyncClient]
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
-    """Set up Grok Conversation."""
+    """Set up OpenAI Conversation."""
 
     async def render_image(call: ServiceCall) -> ServiceResponse:
         """Render an image with dall-e."""
@@ -88,11 +88,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 
 async def async_setup_entry(hass: HomeAssistant, entry: OpenAIConfigEntry) -> bool:
-    """Set up Grok Conversation from a config entry."""
+    """Set up OpenAI Conversation from a config entry."""
     client = openai.AsyncOpenAI(
         base_url="https://api.x.ai/v1",
         api_key=entry.data[CONF_API_KEY],
-        http_client=get_async_client(hass)
+        http_client=get_async_client(hass),
     )
 
     # Cache current platform data which gets added to each request (caching done by library)
@@ -114,5 +114,5 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenAIConfigEntry) -> bo
 
 
 async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Unload Grok."""
+    """Unload OpenAI."""
     return await hass.config_entries.async_unload_platforms(entry, PLATFORMS)
