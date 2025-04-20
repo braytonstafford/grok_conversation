@@ -50,3 +50,31 @@ generate_image:
           options:
             - "vivid"
             - "natural"
+generate_content:
+  name: "generate content"
+  description: "Generate content"
+  fields:
+    config_entry:
+      name: "Config Entry"
+      description: "The config entry to use for this action"
+      required: true
+      selector:
+        config_entry:
+          integration: openai_conversation
+    prompt:
+      name: "Prompt"
+      description: "The text to turn into an image"
+      required: true
+      selector:
+        text:
+          multiline: true
+      example: "Hello, how can I help you?"
+    filenames:
+      name: "Filenames"
+      description: "The filenames for generated content saved to file"
+      selector:
+        text:
+          multiline: true
+      example: |
+        - /path/to/file1.txt
+        - /path/to/file2.txt
