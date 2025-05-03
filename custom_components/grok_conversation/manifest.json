@@ -10,5 +10,5 @@
   "iot_class": "cloud_polling",
   "issue_tracker": "https://github.com/braytonstafford/grok_conversation/issues",
   "requirements": ["openai==1.68.2"],
-  "version": "0.10.0-beta.2"
+  "version": "0.10.0-beta.3"
 }
