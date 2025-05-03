@@ -51,6 +51,8 @@ generate_image:
             - "vivid"
             - "natural"
 generate_content:
+  name: "generate content"
+  description: "Turn a prompt into content saved to a file"
   fields:
     config_entry:
       name: "Config Entry"

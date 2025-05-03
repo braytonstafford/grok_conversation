@@ -305,8 +305,17 @@ class OpenAIConversationEntity(
                 break
 
         intent_response = intent.IntentResponse(language=user_input.language)
-        assert type(chat_log.content[-1]) is conversation.AssistantContent
-        intent_response.async_set_speech(chat_log.content[-1].content or "")
+        # Check if the last content is AssistantContent before accessing
+        last_content = chat_log.content[-1] if chat_log.content else None
+        if isinstance(last_content, conversation.AssistantContent) and last_content.content:
+            intent_response.async_set_speech(last_content.content)
+        else:
+            # Fallback: Set a default or empty response
+            intent_response.async_set_speech("")
+            LOGGER.warning(
+                "Last message is not AssistantContent or empty, using empty speech response"
+            )
+
         return conversation.ConversationResult(
             response=intent_response, conversation_id=chat_log.conversation_id
         )
