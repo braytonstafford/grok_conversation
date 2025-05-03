@@ -307,18 +307,14 @@ class OpenAIConversationEntity(
         intent_response = intent.IntentResponse(language=user_input.language)
         # Check if the last content is AssistantContent before accessing
         last_content = chat_log.content[-1] if chat_log.content else None
-        if isinstance(last_content, conversation.AssistantContent) and last_content.content:
+        if (hasattr(last_content, "content") and last_content.content and last_content.content.strip()):
             intent_response.async_set_speech(last_content.content)
         else:
             # Fallback: Set a default or empty response
             intent_response.async_set_speech("")
-            LOGGER.warning(
-                "Last message is not AssistantContent or empty, using empty speech response", last_content
-            )
+            LOGGER.warning("Last message is not AssistantContent or empty, using empty speech response", last_content)
 
-        return conversation.ConversationResult(
-            response=intent_response, conversation_id=chat_log.conversation_id
-        )
+        return conversation.ConversationResult(response=intent_response, conversation_id=chat_log.conversation_id)
 
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry
