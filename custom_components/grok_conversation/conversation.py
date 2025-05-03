@@ -291,7 +291,7 @@ class OpenAIConversationEntity(
             if tools:
                 model_args["tools"] = tools
 
-            if model.startswith("o"):
+            if model.startswith("g"):
                 model_args["reasoning"] = {
                     "effort": options.get(
                         CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT

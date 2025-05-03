@@ -89,7 +89,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
         try:
             response: ImagesResponse = await client.images.generate(
-                model="dall-e-3",
+                model="grok-3-vision",
                 prompt=call.data[CONF_PROMPT],
                 size=call.data["size"],
                 quality=call.data["quality"],
@@ -134,7 +134,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 mime_type, base64_file = encode_file(filename)
                 if "image/" not in mime_type:
                     raise HomeAssistantError(
-                        "Only images are supported by the OpenAI API,"
+                        "Only images are supported by the xAI API,"
                         f"`{filename}` is not an image file"
                     )
                 content.append(
@@ -168,7 +168,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 "store": False,
             }
 
-            if model.startswith("o"):
+            if model.startswith("g"):
                 model_args["reasoning"] = {
                     "effort": entry.options.get(
                         CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT

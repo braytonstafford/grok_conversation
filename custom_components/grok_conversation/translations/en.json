@@ -49,7 +49,7 @@
               "model": {
                   "name": "Model",
                   "description": "The model",
-                  "example": "gpt-4-vision-preview"
+                  "example": "grok-3-vision"
               },
               "prompt": {
                   "name": "Prompt",
