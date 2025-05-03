@@ -286,7 +286,7 @@ class OpenAIConversationEntity(
             try:
                 result = await client.chat.completions.create(**model_args)
             except openai.RateLimitError as err:
-                LOGGER.error("Rate limited by OpenAI: %s", err)
+                LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
             except openai.OpenAIError as err:
                 LOGGER.error("Error talking to Grok: %s", err)
@@ -313,7 +313,7 @@ class OpenAIConversationEntity(
             # Fallback: Set a default or empty response
             intent_response.async_set_speech("")
             LOGGER.warning(
-                "Last message is not AssistantContent or empty, using empty speech response"
+                "Last message is not AssistantContent or empty, using empty speech response", last_content
             )
 
         return conversation.ConversationResult(
