@@ -168,7 +168,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 "store": False,
             }
 
-            if model.startswith("g"):
+            if model.startswith("o"):
                 model_args["reasoning"] = {
                     "effort": entry.options.get(
                         CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
