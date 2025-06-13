@@ -288,8 +288,8 @@ class OpenAIConversationEntity(
                 "store": False,
                 "stream": True,
             }
-            if tools:
-                model_args["tools"] = tools
+            # if tools:
+            #     model_args["tools"] = tools
 
             if model.startswith("o"):
                 model_args["reasoning"] = {
