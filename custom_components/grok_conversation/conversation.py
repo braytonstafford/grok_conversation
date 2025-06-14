@@ -78,7 +78,6 @@ def _format_tool(
         strict=False,
     )
 
-
 def _convert_content_to_param(
     content: conversation.Content,
 ) -> ResponseInputParam:
@@ -95,8 +94,9 @@ def _convert_content_to_param(
 
     if content.content:
         role: Literal["user", "assistant", "system", "developer"] = content.role
-        if role == "system":
-            role = "developer"
+        if role == "developer":
+            role = "system"
+        # Do not map "system" to "developer"
         messages.append(
             EasyInputMessageParam(type="message", role=role, content=content.content)
         )
@@ -112,7 +112,6 @@ def _convert_content_to_param(
             for tool_call in content.tool_calls
         )
     return messages
-
 
 async def _transform_stream(
     chat_log: conversation.ChatLog,
