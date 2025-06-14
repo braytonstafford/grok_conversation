@@ -5,13 +5,9 @@ import json
 from typing import Any, Literal
 
 import openai
-from openai._streaming import AsyncStream
 from openai.types.responses import (
     EasyInputMessageParam,
-    FunctionToolParam,
-    ResponseFunctionToolCallParam,
     ResponseInputParam,
-    ToolParam,
 )
 from openai.types.responses.response_input_param import FunctionCallOutput
 from openai.types.chat import ChatCompletionChunk
@@ -59,15 +55,18 @@ async def async_setup_entry(
 
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
-) -> FunctionToolParam:
-    """Format tool specification."""
-    return FunctionToolParam(
-        type="function",
-        name=tool.name,
-        parameters=convert(tool.parameters, custom_serializer=custom_serializer),
-        description=tool.description,
-        strict=False,
-    )
+) -> dict:
+    """Format tool specification for xAI chat completions API."""
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
+            "description": tool.description or "",
+            "strict": False,
+        }
+    }
+
 
 def _convert_content_to_param(
     content: conversation.Content,
@@ -93,15 +92,18 @@ def _convert_content_to_param(
 
     if isinstance(content, conversation.AssistantContent) and content.tool_calls:
         messages.extend(
-            ResponseFunctionToolCallParam(
-                type="function_call",
-                name=tool_call.tool_name,
-                arguments=json.dumps(tool_call.tool_args),
-                call_id=tool_call.id,
-            )
+            {
+                "type": "function_call",
+                "function": {
+                    "name": tool_call.tool_name,
+                    "arguments": json.dumps(tool_call.tool_args),
+                },
+                "call_id": tool_call.id,
+            }
             for tool_call in content.tool_calls
         )
     return messages
+
 
 async def _transform_stream(
     chat_log: conversation.ChatLog,
@@ -228,7 +230,7 @@ class OpenAIConversationEntity(
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
-        tools: list[ToolParam] | None = None
+        tools: list[dict] | None = None
         if chat_log.llm_api:
             tools = [
                 _format_tool(tool, chat_log.llm_api.custom_serializer)
@@ -273,8 +275,8 @@ class OpenAIConversationEntity(
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
             except openai.OpenAIError as err:
-                LOGGER.error("Error talking to Grok: %s", err)
-                raise HomeAssistantError("Error talking to Grok") from err
+                LOGGER.error("Error talking to xAI: %s", err)
+                raise HomeAssistantError("Error talking to xAI") from err
 
             # Collect all deltas into a single string
             full_response = ""
@@ -282,26 +284,27 @@ class OpenAIConversationEntity(
                 user_input.agent_id, _transform_stream(chat_log, result)
             ):
                 if isinstance(content, dict) and "content" in content:
-                    full_response += content["content"] or ""
+                    full_response += content["content"]
 
             # Add the full response as a single AssistantContent
-            if full_response:
-                chat_log.add_content(conversation.AssistantContent(content=full_response))
-                messages.append({"role": "assistant", "content": full_response})
+            if full_response or tools:  # Add even if empty to ensure AssistantContent
+                chat_log.add_content(conversation.AssistantContent(content=full_response or "No response generated."))
             else:
-                LOGGER.warning("No assistant content received from API response")
+                LOGGER.warning("No content or tools in response, adding default AssistantContent")
+                chat_log.add_content(conversation.AssistantContent(content="No response generated."))
+
+            messages.extend(_convert_content_to_param(conversation.AssistantContent(content=full_response)))
 
             if not chat_log.unresponded_tool_results:
                 break
 
         intent_response = intent.IntentResponse(language=user_input.language)
-        # Debug chat log content types
-        LOGGER.debug("chat_log.content types: %s", [type(c).__name__ for c in chat_log.content])
+        LOGGER.debug("chat_log.content types: %s", [type(c) for c in chat_log.content])
         if not chat_log.content or not isinstance(chat_log.content[-1], conversation.AssistantContent):
-            LOGGER.warning("Last content item is not AssistantContent: %s", type(chat_log.content[-1]) if chat_log.content else "Empty chat log")
+            LOGGER.warning("Last content item is not AssistantContent: %s", type(chat_log.content[-1]) if chat_log.content else "Empty")
             intent_response.async_set_speech("Sorry, I couldn't generate a response.")
         else:
-            intent_response.async_set_speech(chat_log.content[-1].content or "")
+            intent_response.async_set_speech(full_response or "No response generated.")
         return conversation.ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,
