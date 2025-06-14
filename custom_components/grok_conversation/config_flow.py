@@ -18,6 +18,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
+from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.selector import (
     NumberSelector,
     NumberSelectorConfig,
@@ -66,11 +67,23 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
 
     Data has the keys from STEP_USER_DATA_SCHEMA with values provided by the user.
     """
-    client = openai.AsyncOpenAI(
-        api_key=data[CONF_API_KEY],
-        base_url="https://api.x.ai/v1"
-    )
-    await hass.async_add_executor_job(client.with_options(timeout=10.0).models.list)
+    def sync_validate():
+        client = openai.AsyncOpenAI(
+            api_key=data[CONF_API_KEY],
+            base_url="https://api.x.ai/v1",
+            http_client=get_async_client(hass),
+        )
+        return client.with_options(timeout=10.0).models.list()
+
+    try:
+        await hass.async_add_executor_job(sync_validate)
+    except openai.APIConnectionError:
+        raise
+    except openai.AuthenticationError:
+        raise
+    except Exception as err:
+        _LOGGER.exception("Unexpected exception during validation")
+        raise
 
 
 class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
@@ -96,7 +109,6 @@ class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
         except openai.AuthenticationError:
             errors["base"] = "invalid_auth"
         except Exception:
-            _LOGGER.exception("Unexpected exception")
             errors["base"] = "unknown"
         else:
             return self.async_create_entry(
