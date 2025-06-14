@@ -288,22 +288,24 @@ class OpenAIConversationEntity(
                         for tool_call in tool_calls
                     ]
                     LOGGER.debug("Adding AssistantContent with tool calls: agent_id=%s, content=%s, tool_calls=%s", user_input.agent_id, full_response, tool_inputs)
-                    await chat_log.async_add_assistant_content(
+                    async for _content in chat_log.async_add_assistant_content(
                         conversation.AssistantContent(
                             agent_id=user_input.agent_id,
                             content=full_response,
                             tool_calls=tool_inputs
                         )
-                    )
+                    ):
+                        LOGGER.debug("Yielded content from async_add_assistant_content: %s", _content)
                 else:
                     # Add the full response as a single AssistantContent
                     LOGGER.debug("Adding AssistantContent: agent_id=%s, content=%s", user_input.agent_id, full_response)
-                    await chat_log.async_add_assistant_content(
+                    async for _content in chat_log.async_add_assistant_content(
                         conversation.AssistantContent(
                             agent_id=user_input.agent_id,
                             content=full_response or "No response generated."
                         )
-                    )
+                    ):
+                        LOGGER.debug("Yielded content from async_add_assistant_content: %s", _content)
 
                 # Update messages for the next iteration
                 messages.append({
