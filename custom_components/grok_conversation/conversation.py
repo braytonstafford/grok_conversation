@@ -9,23 +9,14 @@ from openai._streaming import AsyncStream
 from openai.types.responses import (
     EasyInputMessageParam,
     FunctionToolParam,
-    ResponseCompletedEvent,
-    ResponseErrorEvent,
-    ResponseFailedEvent,
-    ResponseFunctionCallArgumentsDeltaEvent,
-    ResponseFunctionCallArgumentsDoneEvent,
-    ResponseFunctionToolCall,
     ResponseFunctionToolCallParam,
-    ResponseIncompleteEvent,
     ResponseInputParam,
-    ResponseOutputItemAddedEvent,
-    ResponseOutputMessage,
-    ResponseStreamEvent,
-    ResponseTextDeltaEvent,
     ToolParam,
 )
 from openai.types.responses.response_input_param import FunctionCallOutput
+from openai.types.chat import ChatCompletionChunk
 from voluptuous_openapi import convert
+from typing import AsyncIterator
 
 from homeassistant.components import assist_pipeline, conversation
 from homeassistant.config_entries import ConfigEntry
@@ -115,83 +106,64 @@ def _convert_content_to_param(
 
 async def _transform_stream(
     chat_log: conversation.ChatLog,
-    result: AsyncStream[ResponseStreamEvent],
-) -> AsyncGenerator[conversation.AssistantContentDeltaDict]:
-    """Transform an OpenAI delta stream into HA format."""
-    async for event in result:
-        LOGGER.debug("Received event: %s", event)
-
-        if isinstance(event, ResponseOutputItemAddedEvent):
-            if isinstance(event.item, ResponseOutputMessage):
-                yield {"role": event.item.role}
-            elif isinstance(event.item, ResponseFunctionToolCall):
-                current_tool_call = event.item
-        elif isinstance(event, ResponseTextDeltaEvent):
-            yield {"content": event.delta}
-        elif isinstance(event, ResponseFunctionCallArgumentsDeltaEvent):
-            current_tool_call.arguments += event.delta
-        elif isinstance(event, ResponseFunctionCallArgumentsDoneEvent):
-            current_tool_call.status = "completed"
-            yield {
-                "tool_calls": [
-                    llm.ToolInput(
-                        id=current_tool_call.call_id,
-                        tool_name=current_tool_call.name,
-                        tool_args=json.loads(current_tool_call.arguments),
+    result: AsyncIterator[ChatCompletionChunk],
+) -> AsyncGenerator[dict, None]:
+    """
+    Transform an xAI chat completions delta stream into Home Assistant format.
+    Yields dictionaries with role, content, or tool calls for incremental updates.
+    """
+    current_tool_call = None
+    tool_call_counter = 0
+    async for chunk in result:
+        for choice in chunk.choices:
+            if choice.delta:
+                # Handle role
+                if choice.delta.role:
+                    yield {"role": choice.delta.role}
+                # Handle content
+                if choice.delta.content:
+                    yield {"content": choice.delta.content}
+                # Handle function calls (tool calls)
+                if choice.delta.function_call:
+                    if current_tool_call is None:
+                        # Start a new tool call
+                        current_tool_call = {
+                            "name": choice.delta.function_call.get("name", ""),
+                            "arguments": choice.delta.function_call.get("arguments", "")
+                        }
+                    else:
+                        # Append to existing tool call arguments
+                        if "arguments" in choice.delta.function_call:
+                            current_tool_call["arguments"] += choice.delta.function_call["arguments"]
+                    # Check if arguments are complete (i.e., valid JSON)
+                    try:
+                        parsed_args = json.loads(current_tool_call["arguments"])
+                        # If parsing succeeds, yield the complete tool call
+                        tool_id = str(tool_call_counter)
+                        yield {
+                            "tool_calls": [
+                                {
+                                    "id": tool_id,
+                                    "tool_name": current_tool_call["name"],
+                                    "tool_args": parsed_args
+                                }
+                            ]
+                        }
+                        current_tool_call = None
+                        tool_call_counter += 1
+                    except json.JSONDecodeError:
+                        # Arguments are not yet complete
+                        pass
+                # Log usage stats if available
+                if chunk.usage:
+                    chat_log.async_trace(
+                        {
+                            "stats": {
+                                "input_tokens": chunk.usage.prompt_tokens,
+                                "output_tokens": chunk.usage.completion_tokens,
+                            }
+                        }
                     )
-                ]
-            }
-        elif isinstance(event, ResponseCompletedEvent):
-            if event.response.usage is not None:
-                chat_log.async_trace(
-                    {
-                        "stats": {
-                            "input_tokens": event.response.usage.input_tokens,
-                            "output_tokens": event.response.usage.output_tokens,
-                        }
-                    }
-                )
-        elif isinstance(event, ResponseIncompleteEvent):
-            if event.response.usage is not None:
-                chat_log.async_trace(
-                    {
-                        "stats": {
-                            "input_tokens": event.response.usage.input_tokens,
-                            "output_tokens": event.response.usage.output_tokens,
-                        }
-                    }
-                )
-
-            if (
-                event.response.incomplete_details
-                and event.response.incomplete_details.reason
-            ):
-                reason: str = event.response.incomplete_details.reason
-            else:
-                reason = "unknown reason"
-
-            if reason == "max_output_tokens":
-                reason = "max output tokens reached"
-            elif reason == "content_filter":
-                reason = "content filter triggered"
-
-            raise HomeAssistantError(f"OpenAI response incomplete: {reason}")
-        elif isinstance(event, ResponseFailedEvent):
-            if event.response.usage is not None:
-                chat_log.async_trace(
-                    {
-                        "stats": {
-                            "input_tokens": event.response.usage.input_tokens,
-                            "output_tokens": event.response.usage.output_tokens,
-                        }
-                    }
-                )
-            reason = "unknown reason"
-            if event.response.error is not None:
-                reason = event.response.error.message
-            raise HomeAssistantError(f"OpenAI response failed: {reason}")
-        elif isinstance(event, ResponseErrorEvent):
-            raise HomeAssistantError(f"OpenAI response error: {event.message}")
 
 
 class OpenAIConversationEntity(
