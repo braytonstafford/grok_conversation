@@ -128,13 +128,13 @@ async def _transform_stream(
                     if current_tool_call is None:
                         # Start a new tool call
                         current_tool_call = {
-                            "name": choice.delta.function_call.get("name", ""),
-                            "arguments": choice.delta.function_call.get("arguments", "")
+                            "name": choice.delta.function_call.name,
+                            "arguments": choice.delta.function_call.arguments or ""
                         }
                     else:
                         # Append to existing tool call arguments
-                        if "arguments" in choice.delta.function_call:
-                            current_tool_call["arguments"] += choice.delta.function_call["arguments"]
+                        if choice.delta.function_call.arguments:
+                            current_tool_call["arguments"] += choice.delta.function_call.arguments
                     # Check if arguments are complete (i.e., valid JSON)
                     try:
                         parsed_args = json.loads(current_tool_call["arguments"])
