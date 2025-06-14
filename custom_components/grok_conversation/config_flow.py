@@ -57,7 +57,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 RECOMMENDED_OPTIONS = {
     CONF_RECOMMENDED: True,
-    CONF_LLM_HASS_API: llm.LLM_API_ASSIST,
+    CONF_LLM_HASS_API: "none",  # Changed to disable tools by default
     CONF_PROMPT: llm.DEFAULT_INSTRUCTIONS_PROMPT,
 }
 

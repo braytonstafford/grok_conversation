@@ -7,7 +7,10 @@ from typing import Any, Literal
 import openai
 from openai.types.responses import (
     EasyInputMessageParam,
+    FunctionToolParam,
+    ResponseFunctionToolCallParam,
     ResponseInputParam,
+    ToolParam,
 )
 from openai.types.responses.response_input_param import FunctionCallOutput
 from openai.types.chat import ChatCompletionChunk
@@ -55,17 +58,15 @@ async def async_setup_entry(
 
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
-) -> dict:
-    """Format tool specification for xAI chat completions API."""
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
-            "description": tool.description or "",
-            "strict": False,
-        }
-    }
+) -> FunctionToolParam:
+    """Format tool specification."""
+    return FunctionToolParam(
+        type="function",
+        name=tool.name,
+        parameters=convert(tool.parameters, custom_serializer=custom_serializer),
+        description=tool.description,
+        strict=False,
+    )
 
 
 def _convert_content_to_param(
@@ -92,14 +93,12 @@ def _convert_content_to_param(
 
     if isinstance(content, conversation.AssistantContent) and content.tool_calls:
         messages.extend(
-            {
-                "type": "function_call",
-                "function": {
-                    "name": tool_call.tool_name,
-                    "arguments": json.dumps(tool_call.tool_args),
-                },
-                "call_id": tool_call.id,
-            }
+            ResponseFunctionToolCallParam(
+                type="function_call",
+                name=tool_call.tool_name,
+                arguments=json.dumps(tool_call.tool_args),
+                call_id=tool_call.id,
+            )
             for tool_call in content.tool_calls
         )
     return messages
@@ -116,6 +115,7 @@ async def _transform_stream(
     current_tool_call = None
     tool_call_counter = 0
     async for chunk in result:
+        LOGGER.debug("Processing chunk: %s", chunk)
         for choice in chunk.choices:
             if choice.delta:
                 # Handle role
@@ -165,6 +165,9 @@ async def _transform_stream(
                             }
                         }
                     )
+                # Log finish reason if available
+                if choice.finish_reason:
+                    LOGGER.debug("Stream finished with reason: %s", choice.finish_reason)
 
 
 class OpenAIConversationEntity(
@@ -230,7 +233,7 @@ class OpenAIConversationEntity(
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
-        tools: list[dict] | None = None
+        tools: list[ToolParam] | None = None
         if chat_log.llm_api:
             tools = [
                 _format_tool(tool, chat_log.llm_api.custom_serializer)
@@ -257,7 +260,7 @@ class OpenAIConversationEntity(
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "user": chat_log.conversation_id,
-                "stream": False,  # Disable streaming
+                "stream": True,
             }
             if tools:
                 model_args["tools"] = tools
@@ -271,87 +274,46 @@ class OpenAIConversationEntity(
 
             try:
                 result = await client.chat.completions.create(**model_args)
-                # Extract the full response
-                full_response = result.choices[0].message.content or ""
-                tool_calls = result.choices[0].message.tool_calls or []
-
-                LOGGER.debug("API response: content=%s, tool_calls=%s", full_response, tool_calls)
-
-                # Add tool calls to chat log if present
-                if tool_calls:
-                    tool_inputs = [
-                        llm.ToolInput(
-                            id=tool_call.id,
-                            tool_name=tool_call.function.name,
-                            tool_args=json.loads(tool_call.function.arguments)
-                        )
-                        for tool_call in tool_calls
-                    ]
-                    LOGGER.debug("Adding AssistantContent with tool calls: agent_id=%s, content=%s, tool_calls=%s", user_input.agent_id, full_response, tool_inputs)
-                    async for _content in chat_log.async_add_assistant_content(
-                        conversation.AssistantContent(
-                            agent_id=user_input.agent_id,
-                            content=full_response,
-                            tool_calls=tool_inputs
-                        )
-                    ):
-                        LOGGER.debug("Yielded content from async_add_assistant_content: %s", _content)
-                else:
-                    # Add the full response as a single AssistantContent
-                    LOGGER.debug("Adding AssistantContent: agent_id=%s, content=%s", user_input.agent_id, full_response)
-                    async for _content in chat_log.async_add_assistant_content(
-                        conversation.AssistantContent(
-                            agent_id=user_input.agent_id,
-                            content=full_response or "No response generated."
-                        )
-                    ):
-                        LOGGER.debug("Yielded content from async_add_assistant_content: %s", _content)
-
-                # Update messages for the next iteration
-                messages.append({
-                    "role": "assistant",
-                    "content": full_response,
-                    "tool_calls": [
-                        {
-                            "id": tool_call.id,
-                            "type": "function",
-                            "function": {
-                                "name": tool_call.function.name,
-                                "arguments": tool_call.function.arguments
-                            }
-                        }
-                        for tool_call in tool_calls
-                    ] if tool_calls else None
-                })
-
-                # Log usage stats if available
-                if result.usage:
-                    chat_log.async_trace(
-                        {
-                            "stats": {
-                                "input_tokens": result.usage.prompt_tokens,
-                                "output_tokens": result.usage.completion_tokens,
-                            }
-                        }
-                    )
-
             except openai.RateLimitError as err:
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
             except openai.OpenAIError as err:
-                LOGGER.error("Error talking to xAI: %s", err)
-                raise HomeAssistantError("Error talking to xAI") from err
+                LOGGER.error("Error talking to Grok: %s", err)
+                raise HomeAssistantError("Error talking to Grok") from err
+
+            # Collect all deltas into a single string
+            full_response = ""
+            deltas = []
+            async for content in chat_log.async_add_delta_content_stream(
+                user_input.agent_id, _transform_stream(chat_log, result)
+            ):
+                deltas.append(content)
+                if isinstance(content, dict) and "content" in content:
+                    full_response += content["content"] or ""
+
+            LOGGER.debug("Received deltas: %s", deltas)
+
+            # Add the full response as a single AssistantContent
+            if full_response:
+                chat_log.add_content(conversation.AssistantContent(content=full_response))
+                messages.append({"role": "assistant", "content": full_response})
+            else:
+                LOGGER.warning("No assistant content received from API response")
 
             if not chat_log.unresponded_tool_results:
                 break
 
         intent_response = intent.IntentResponse(language=user_input.language)
-        LOGGER.debug("chat_log.content types: %s", [type(c) for c in chat_log.content])
+        # Debug chat log content types
+        LOGGER.debug("chat_log.content types: %s", [type(c).__name__ for c in chat_log.content])
         if not chat_log.content or not isinstance(chat_log.content[-1], conversation.AssistantContent):
-            LOGGER.warning("Last content item is not AssistantContent: %s", type(chat_log.content[-1]) if chat_log.content else "Empty")
+            LOGGER.warning(
+                "Last content item is not AssistantContent: %s",
+                type(chat_log.content[-1]).__name__ if chat_log.content else "Empty chat log"
+            )
             intent_response.async_set_speech("Sorry, I couldn't generate a response.")
         else:
-            intent_response.async_set_speech(full_response or "No response generated.")
+            intent_response.async_set_speech(full_response or "")
         return conversation.ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,
