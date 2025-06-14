@@ -156,8 +156,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         try:
             model_args = {
                 "model": model,
-                "input": messages,
-                "max_output_tokens": entry.options.get(
+                "messages": messages,
+                "max_tokens": entry.options.get(
                     CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS
                 ),
                 "top_p": entry.options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
@@ -165,7 +165,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
                 ),
                 "user": call.context.user_id,
-                "store": False,
             }
 
             if model.startswith("o"):
@@ -175,7 +174,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     )
                 }
 
-            response: Response = await client.responses.create(**model_args)
+            response: Response = await client.chat.completions.create(**model_args)
 
         except openai.OpenAIError as err:
             raise HomeAssistantError(f"Error generating content: {err}") from err

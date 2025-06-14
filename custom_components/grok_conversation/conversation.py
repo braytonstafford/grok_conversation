@@ -278,18 +278,17 @@ class OpenAIConversationEntity(
         for _iteration in range(MAX_TOOL_ITERATIONS):
             model_args = {
                 "model": model,
-                "input": messages,
-                "max_output_tokens": options.get(
+                "messages": messages,
+                "max_tokens": options.get(
                     CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS
                 ),
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "user": chat_log.conversation_id,
-                "store": False,
                 "stream": True,
             }
-            # if tools:
-            #     model_args["tools"] = tools
+            if tools:
+                model_args["tools"] = tools
 
             if model.startswith("o"):
                 model_args["reasoning"] = {
@@ -299,7 +298,7 @@ class OpenAIConversationEntity(
                 }
 
             try:
-                result = await client.responses.create(**model_args)
+                result = await client.chat.completions.create(**model_args)
             except openai.RateLimitError as err:
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
