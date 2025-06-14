@@ -233,13 +233,6 @@ class OpenAIConversationEntity(
         except conversation.ConverseError as err:
             return err.as_conversation_result()
 
-        tools: list[ToolParam] | None = None
-        if chat_log.llm_api:
-            tools = [
-                _format_tool(tool, chat_log.llm_api.custom_serializer)
-                for tool in chat_log.llm_api.tools
-            ]
-
         model = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
         messages = [
             m
@@ -260,7 +253,7 @@ class OpenAIConversationEntity(
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "user": chat_log.conversation_id,
-                "stream": True,
+                "stream": False,  # Changed to non-streaming for testing
             }
 
             if model.startswith("o"):
@@ -271,7 +264,30 @@ class OpenAIConversationEntity(
                 }
 
             try:
+                LOGGER.debug("Sending API request: %s", model_args)
                 result = await client.chat.completions.create(**model_args)
+                # Extract the full response
+                full_response = result.choices[0].message.content or ""
+                LOGGER.debug("API response: %s", full_response)
+
+                # Add the full response as a single AssistantContent
+                if full_response:
+                    chat_log.add_content(conversation.AssistantContent(content=full_response))
+                    messages.append({"role": "assistant", "content": full_response})
+                else:
+                    LOGGER.warning("No assistant content received from API response")
+
+                # Log usage stats if available
+                if result.usage:
+                    chat_log.async_trace(
+                        {
+                            "stats": {
+                                "input_tokens": result.usage.prompt_tokens,
+                                "output_tokens": result.usage.completion_tokens,
+                            }
+                        }
+                    )
+
             except openai.RateLimitError as err:
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
@@ -279,27 +295,7 @@ class OpenAIConversationEntity(
                 LOGGER.error("Error talking to Grok: %s", err)
                 raise HomeAssistantError("Error talking to Grok") from err
 
-            # Collect all deltas into a single string
-            full_response = ""
-            deltas = []
-            async for content in chat_log.async_add_delta_content_stream(
-                user_input.agent_id, _transform_stream(chat_log, result)
-            ):
-                deltas.append(content)
-                if isinstance(content, dict) and "content" in content:
-                    full_response += content["content"] or ""
-
-            LOGGER.debug("Received deltas: %s", deltas)
-
-            # Add the full response as a single AssistantContent
-            if full_response:
-                chat_log.add_content(conversation.AssistantContent(content=full_response))
-                messages.append({"role": "assistant", "content": full_response})
-            else:
-                LOGGER.warning("No assistant content received from API response")
-
-            if not chat_log.unresponded_tool_results:
-                break
+            break  # Exit loop since no tools are used
 
         intent_response = intent.IntentResponse(language=user_input.language)
         # Debug chat log content types
