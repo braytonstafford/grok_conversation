@@ -253,7 +253,7 @@ class OpenAIConversationEntity(
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "user": chat_log.conversation_id,
-                "stream": False,  # Changed to non-streaming for testing
+                "stream": False,  # Non-streaming mode for testing
             }
 
             if model.startswith("o"):
@@ -272,7 +272,13 @@ class OpenAIConversationEntity(
 
                 # Add the full response as a single AssistantContent
                 if full_response:
-                    chat_log.add_content(conversation.AssistantContent(content=full_response))
+                    async for _content in chat_log.async_add_assistant_content(
+                        conversation.AssistantContent(
+                            agent_id=user_input.agent_id,
+                            content=full_response
+                        )
+                    ):
+                        LOGGER.debug("Yielded content from async_add_assistant_content: %s", _content)
                     messages.append({"role": "assistant", "content": full_response})
                 else:
                     LOGGER.warning("No assistant content received from API response")
@@ -292,8 +298,8 @@ class OpenAIConversationEntity(
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
             except openai.OpenAIError as err:
-                LOGGER.error("Error talking to Grok: %s", err)
-                raise HomeAssistantError("Error talking to Grok") from err
+                LOGGER.error("Error talking to xAI: %s", err)
+                raise HomeAssistantError("Error talking to xAI") from err
 
             break  # Exit loop since no tools are used
 
