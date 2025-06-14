@@ -257,7 +257,7 @@ class OpenAIConversationEntity(
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "user": chat_log.conversation_id,
-                "stream": True,
+                "stream": False,  # Disable streaming
             }
             if tools:
                 model_args["tools"] = tools
@@ -271,29 +271,63 @@ class OpenAIConversationEntity(
 
             try:
                 result = await client.chat.completions.create(**model_args)
+                # Extract the full response
+                full_response = result.choices[0].message.content or ""
+                tool_calls = result.choices[0].message.tool_calls or []
+
+                # Add tool calls to chat log if present
+                if tool_calls:
+                    tool_inputs = [
+                        llm.ToolInput(
+                            id=tool_call.id,
+                            tool_name=tool_call.function.name,
+                            tool_args=json.loads(tool_call.function.arguments)
+                        )
+                        for tool_call in tool_calls
+                    ]
+                    chat_log.add_content(
+                        conversation.AssistantContent(content=full_response, tool_calls=tool_inputs)
+                    )
+                else:
+                    # Add the full response as a single AssistantContent
+                    chat_log.add_content(
+                        conversation.AssistantContent(content=full_response or "No response generated.")
+                    )
+
+                # Update messages for the next iteration
+                messages.append({
+                    "role": "assistant",
+                    "content": full_response,
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments
+                            }
+                        }
+                        for tool_call in tool_calls
+                    ] if tool_calls else None
+                })
+
+                # Log usage stats if available
+                if result.usage:
+                    chat_log.async_trace(
+                        {
+                            "stats": {
+                                "input_tokens": result.usage.prompt_tokens,
+                                "output_tokens": result.usage.completion_tokens,
+                            }
+                        }
+                    )
+
             except openai.RateLimitError as err:
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
             except openai.OpenAIError as err:
                 LOGGER.error("Error talking to xAI: %s", err)
                 raise HomeAssistantError("Error talking to xAI") from err
-
-            # Collect all deltas into a single string
-            full_response = ""
-            async for content in chat_log.async_add_delta_content_stream(
-                user_input.agent_id, _transform_stream(chat_log, result)
-            ):
-                if isinstance(content, dict) and "content" in content:
-                    full_response += content["content"]
-
-            # Add the full response as a single AssistantContent
-            if full_response or tools:  # Add even if empty to ensure AssistantContent
-                chat_log.add_content(conversation.AssistantContent(content=full_response or "No response generated."))
-            else:
-                LOGGER.warning("No content or tools in response, adding default AssistantContent")
-                chat_log.add_content(conversation.AssistantContent(content="No response generated."))
-
-            messages.extend(_convert_content_to_param(conversation.AssistantContent(content=full_response)))
 
             if not chat_log.unresponded_tool_results:
                 break
