@@ -287,14 +287,12 @@ class OpenAIConversationEntity(
                         )
                         for tool_call in tool_calls
                     ]
-                    await chat_log.async_add_content(
-                        user_input.agent_id,
+                    await chat_log.async_add_assistant_content(
                         conversation.AssistantContent(content=full_response, tool_calls=tool_inputs)
                     )
                 else:
                     # Add the full response as a single AssistantContent
-                    await chat_log.async_add_content(
-                        user_input.agent_id,
+                    await chat_log.async_add_assistant_content(
                         conversation.AssistantContent(content=full_response or "No response generated.")
                     )
 
