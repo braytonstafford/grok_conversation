@@ -87,7 +87,6 @@ def _convert_content_to_param(
         role: Literal["user", "assistant", "system", "developer"] = content.role
         if role == "developer":
             role = "system"
-        # Do not map "system" to "developer"
         messages.append(
             EasyInputMessageParam(type="message", role=role, content=content.content)
         )
@@ -258,8 +257,8 @@ class OpenAIConversationEntity(
                 "user": chat_log.conversation_id,
                 "stream": True,
             }
-            # if tools:
-            #     model_args["tools"] = tools
+            if tools:
+                model_args["tools"] = tools
 
             if model.startswith("o"):
                 model_args["reasoning"] = {
@@ -277,17 +276,32 @@ class OpenAIConversationEntity(
                 LOGGER.error("Error talking to Grok: %s", err)
                 raise HomeAssistantError("Error talking to Grok") from err
 
+            # Collect all deltas into a single string
+            full_response = ""
             async for content in chat_log.async_add_delta_content_stream(
                 user_input.agent_id, _transform_stream(chat_log, result)
             ):
-                messages.extend(_convert_content_to_param(content))
+                if isinstance(content, dict) and "content" in content:
+                    full_response += content["content"] or ""
+
+            # Add the full response as a single AssistantContent
+            if full_response:
+                chat_log.add_content(conversation.AssistantContent(content=full_response))
+                messages.append({"role": "assistant", "content": full_response})
+            else:
+                LOGGER.warning("No assistant content received from API response")
 
             if not chat_log.unresponded_tool_results:
                 break
 
         intent_response = intent.IntentResponse(language=user_input.language)
-        assert type(chat_log.content[-1]) is conversation.AssistantContent
-        intent_response.async_set_speech(chat_log.content[-1].content or "")
+        # Debug chat log content types
+        LOGGER.debug("chat_log.content types: %s", [type(c).__name__ for c in chat_log.content])
+        if not chat_log.content or not isinstance(chat_log.content[-1], conversation.AssistantContent):
+            LOGGER.warning("Last content item is not AssistantContent: %s", type(chat_log.content[-1]) if chat_log.content else "Empty chat log")
+            intent_response.async_set_speech("Sorry, I couldn't generate a response.")
+        else:
+            intent_response.async_set_speech(chat_log.content[-1].content or "")
         return conversation.ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,
