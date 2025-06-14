@@ -3,7 +3,12 @@
     "step": {
       "user": {
         "data": {
-          "api_key": "[%key:common::config_flow::data::api_key%]"
+          "name": "[%key:common::config_flow::data::name%]",
+          "api_key": "[%key:common::config_flow::data::api_key%]",
+          "base_url": "[%key:common::config_flow::data::base_url%]",
+          "api_version": "[%key:common::config_flow::data::api_version%]",
+          "organization": "[%key:common::config_flow::data::organization%]",
+          "skip_authentication": "[%key:common::config_flow::data::skip_authentication%]"
         }
       }
     },
@@ -70,6 +75,24 @@
         "style": {
           "name": "Style",
           "description": "The style of the generated image"
+        }
+      }
+    },
+    "generate_content": {
+      "name": "Generate content",
+      "description": "Sends a conversational query to ChatGPT including any attached image files",
+      "fields": {
+        "config_entry": {
+          "name": "Config entry",
+          "description": "The config entry to use for this action"
+        },
+        "prompt": {
+          "name": "Prompt",
+          "description": "The prompt to send"
+        },
+        "filenames": {
+          "name": "Files",
+          "description": "List of files to upload"
         }
       }
     }
