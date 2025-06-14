@@ -262,8 +262,6 @@ class OpenAIConversationEntity(
                 "user": chat_log.conversation_id,
                 "stream": True,
             }
-            if tools:
-                model_args["tools"] = tools
 
             if model.startswith("o"):
                 model_args["reasoning"] = {
