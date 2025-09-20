@@ -39,6 +39,7 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_FILENAMES,
     CONF_MAX_TOKENS,
+    CONF_PAYLOAD_TEMPLATE,
     CONF_PROMPT,
     CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
@@ -89,7 +90,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
         try:
             response: ImagesResponse = await client.images.generate(
-                model="grok-3-vision",
+                model="grok-4-vision",
                 prompt=call.data[CONF_PROMPT],
                 size=call.data["size"],
                 quality=call.data["quality"],

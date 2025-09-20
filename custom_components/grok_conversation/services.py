@@ -30,7 +30,7 @@ QUERY_IMAGE_SCHEMA = vol.Schema(
                 "integration": DOMAIN,
             }
         ),
-        vol.Required("model", default="gpt-4-vision-preview"): cv.string,
+        vol.Required("model", default="grok-4-vision"): cv.string,
         vol.Required("prompt"): cv.string,
         vol.Required("images"): vol.All(cv.ensure_list, [{"url": cv.string}]),
         vol.Optional("max_tokens", default=300): cv.positive_int,
@@ -60,9 +60,17 @@ async def async_setup_services(hass: HomeAssistant, config: ConfigType) -> None:
             ]
             _LOGGER.info("Prompt for %s: %s", model, messages)
 
-            response = await AsyncOpenAI(
-                api_key=hass.data[DOMAIN][call.data["config_entry"]]["api_key"]
-            ).chat.completions.create(
+            entry_id = call.data["config_entry"]
+            entry = hass.config_entries.async_get_entry(entry_id)
+
+            if entry is None or entry.domain != DOMAIN:
+                raise HomeAssistantError(
+                    f"Invalid config entry provided. Got {entry_id}"
+                )
+
+            client = entry.runtime_data
+
+            response = await client.chat.completions.create(
                 model=model,
                 messages=messages,
                 max_tokens=call.data["max_tokens"],
