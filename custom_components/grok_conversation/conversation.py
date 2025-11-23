@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator, Callable
 import json
+import re
 from typing import Any, Literal
 
 import openai
@@ -30,14 +31,12 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
-    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
     LOGGER,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
@@ -59,6 +58,29 @@ from .helpers import (
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
+
+
+def _strip_json_from_response(response: str) -> str:
+    """Strip JSON objects from the end of LLM responses."""
+    if not response:
+        return response
+
+    # Look for JSON objects at the end of the response
+    # Find the last opening brace and check if everything after it is valid JSON
+    last_brace_index = response.rfind('{')
+    if last_brace_index == -1:
+        return response
+
+    # Extract potential JSON from the last brace to the end
+    potential_json = response[last_brace_index:]
+    try:
+        # Try to parse it as JSON
+        json.loads(potential_json)
+        # If successful, remove the JSON part
+        return response[:last_brace_index].strip()
+    except json.JSONDecodeError:
+        # Not valid JSON, check for nested braces
+        return response
 
 
 async def async_setup_entry(
@@ -285,13 +307,6 @@ class OpenAIConversationEntity(
                 model_args["tools"] = tools
                 model_args["tool_choice"] = "auto"
 
-            if model.startswith("o"):
-                model_args["reasoning"] = {
-                    "effort": options.get(
-                        CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
-                    )
-                }
-
             try:
                 LOGGER.debug("Sending API request: %s", model_args)
                 result = await client.chat.completions.create(**model_args)
@@ -380,6 +395,8 @@ class OpenAIConversationEntity(
                 else:
                     # No tool calls, this is the final response
                     full_response = message.content or ""
+                    # Strip any JSON metadata from the end of the response
+                    full_response = _strip_json_from_response(full_response)
                     LOGGER.debug("API response: %s", full_response)
 
                     # Add the response as AssistantContent

@@ -48,7 +48,7 @@
               "model": {
                   "name": "Modello",
                   "description": "Il modello",
-                  "example": "gpt-4-vision-preview"
+                  "example": "grok-2-vision-1212"
               },
               "prompt": {
                   "name": "Prompt",

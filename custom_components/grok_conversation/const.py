@@ -18,19 +18,12 @@ EVENT_AUTOMATION_REGISTERED = "automation_registered"
 OPENAI_BASE_URL = "https://api.x.ai/v1"
 SERVICE_QUERY_IMAGE = "query_image"
 RECOMMENDED_CHAT_MODEL = "grok-4"
+RECOMMENDED_VISION_MODEL = "grok-2-vision-1212"
+RECOMMENDED_IMAGE_GENERATION_MODEL = "grok-2-image-1212"
 RECOMMENDED_MAX_TOKENS = 150
 RECOMMENDED_REASONING_EFFORT = "low"
 RECOMMENDED_TEMPERATURE = 1.0
 RECOMMENDED_TOP_P = 1.0
 
-UNSUPPORTED_MODELS: list[str] = [
-    "o1-mini",
-    "o1-mini-2024-09-12",
-    "o1-preview",
-    "o1-preview-2024-09-12",
-    "gpt-4o-realtime-preview",
-    "gpt-4o-realtime-preview-2024-12-17",
-    "gpt-4o-realtime-preview-2024-10-01",
-    "gpt-4o-mini-realtime-preview",
-    "gpt-4o-mini-realtime-preview-2024-12-17",
-]
+# Grok models that are not supported or deprecated
+UNSUPPORTED_MODELS: list[str] = []

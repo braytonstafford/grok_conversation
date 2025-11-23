@@ -21,7 +21,7 @@ from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import config_validation as cv, selector
 from homeassistant.helpers.typing import ConfigType
 
-from .const import DOMAIN, SERVICE_QUERY_IMAGE
+from .const import DOMAIN, RECOMMENDED_VISION_MODEL, SERVICE_QUERY_IMAGE
 
 QUERY_IMAGE_SCHEMA = vol.Schema(
     {
@@ -30,7 +30,7 @@ QUERY_IMAGE_SCHEMA = vol.Schema(
                 "integration": DOMAIN,
             }
         ),
-        vol.Required("model", default="grok-4-vision"): cv.string,
+        vol.Required("model", default=RECOMMENDED_VISION_MODEL): cv.string,
         vol.Required("prompt"): cv.string,
         vol.Required("images"): vol.All(cv.ensure_list, [{"url": cv.string}]),
         vol.Optional("max_tokens", default=300): cv.positive_int,
@@ -41,7 +41,7 @@ _LOGGER = logging.getLogger(__package__)
 
 
 async def async_setup_services(hass: HomeAssistant, config: ConfigType) -> None:
-    """Set up services for the extended openai conversation component."""
+    """Set up services for the Grok conversation component."""
 
     async def query_image(call: ServiceCall) -> ServiceResponse:
         """Query an image."""
@@ -78,7 +78,7 @@ async def async_setup_services(hass: HomeAssistant, config: ConfigType) -> None:
             response_dict = response.model_dump()
             _LOGGER.info("Response %s", response_dict)
         except OpenAIError as err:
-            raise HomeAssistantError(f"Error generating image: {err}") from err
+            raise HomeAssistantError(f"Error querying image: {err}") from err
 
         return response_dict
 

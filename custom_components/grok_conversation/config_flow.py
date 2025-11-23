@@ -34,14 +34,12 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
-    CONF_REASONING_EFFORT,
     CONF_RECOMMENDED,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     UNSUPPORTED_MODELS,
@@ -235,17 +233,6 @@ def openai_config_option_schema(
                 description={"suggested_value": options.get(CONF_TEMPERATURE)},
                 default=RECOMMENDED_TEMPERATURE,
             ): NumberSelector(NumberSelectorConfig(min=0, max=2, step=0.05)),
-            vol.Optional(
-                CONF_REASONING_EFFORT,
-                description={"suggested_value": options.get(CONF_REASONING_EFFORT)},
-                default=RECOMMENDED_REASONING_EFFORT,
-            ): SelectSelector(
-                SelectSelectorConfig(
-                    options=["low", "medium", "high"],
-                    translation_key="reasoning_effort",
-                    mode=SelectSelectorMode.DROPDOWN,
-                )
-            ),
         }
     )
     return schema
