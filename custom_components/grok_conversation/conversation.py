@@ -2,6 +2,7 @@
 
 from collections.abc import AsyncGenerator, Callable
 import json
+import re
 from typing import Any, Literal
 
 import openai
@@ -30,20 +31,56 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
-    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
     LOGGER,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
+)
+from .exceptions import (
+    CallServiceError,
+    EntityNotExposed,
+    EntityNotFound,
+    FunctionNotFound,
+    InvalidFunction,
+    NativeNotFound,
+    ParseArgumentsFailed,
+    TokenLengthExceededError,
+)
+from .helpers import (
+    convert_to_template,
+    get_function_executor,
+    validate_authentication,
 )
 
 # Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
+
+
+def _strip_json_from_response(response: str) -> str:
+    """Strip JSON objects from the end of LLM responses."""
+    if not response:
+        return response
+
+    # Look for JSON objects at the end of the response
+    # Find the last opening brace and check if everything after it is valid JSON
+    last_brace_index = response.rfind('{')
+    if last_brace_index == -1:
+        return response
+
+    # Extract potential JSON from the last brace to the end
+    potential_json = response[last_brace_index:]
+    try:
+        # Try to parse it as JSON
+        json.loads(potential_json)
+        # If successful, remove the JSON part
+        return response[:last_brace_index].strip()
+    except json.JSONDecodeError:
+        # Not valid JSON, check for nested braces
+        return response
 
 
 async def async_setup_entry(
@@ -220,7 +257,7 @@ class OpenAIConversationEntity(
         user_input: conversation.ConversationInput,
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
-        """Call the API."""
+        """Call the API with function calling support."""
         options = self.entry.options
 
         try:
@@ -242,8 +279,18 @@ class OpenAIConversationEntity(
 
         client = self.entry.runtime_data
 
+        # Get exposed entities if LLM HASS API is enabled
+        exposed_entities = []
+        if options.get(CONF_LLM_HASS_API):
+            exposed_entities = llm.async_get_api(self.hass, options[CONF_LLM_HASS_API]).async_get_exposed_entities()
+
         # To prevent infinite loops, we limit the number of iterations
         for _iteration in range(MAX_TOOL_ITERATIONS):
+            # Prepare tools for the API call if we have exposed entities
+            tools = []
+            if exposed_entities:
+                tools = [_format_tool(tool, None) for tool in llm.async_get_api(self.hass, options[CONF_LLM_HASS_API]).async_get_tools()]
+
             model_args = {
                 "model": model,
                 "messages": messages,
@@ -253,35 +300,116 @@ class OpenAIConversationEntity(
                 "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                 "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
                 "user": chat_log.conversation_id,
-                "stream": False,  # Non-streaming mode for testing
+                "stream": False,
             }
 
-            if model.startswith("o"):
-                model_args["reasoning"] = {
-                    "effort": options.get(
-                        CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
-                    )
-                }
+            if tools:
+                model_args["tools"] = tools
+                model_args["tool_choice"] = "auto"
 
             try:
                 LOGGER.debug("Sending API request: %s", model_args)
                 result = await client.chat.completions.create(**model_args)
-                # Extract the full response
-                full_response = result.choices[0].message.content or ""
-                LOGGER.debug("API response: %s", full_response)
 
-                # Add the full response as a single AssistantContent
-                if full_response:
-                    async for _content in chat_log.async_add_assistant_content(
-                        conversation.AssistantContent(
-                            agent_id=user_input.agent_id,
-                            content=full_response
+                choice = result.choices[0]
+                message = choice.message
+
+                # Handle tool calls if present
+                if hasattr(message, 'tool_calls') and message.tool_calls:
+                    # Add assistant message with tool calls
+                    assistant_content = conversation.AssistantContent(
+                        agent_id=user_input.agent_id,
+                        content=message.content or ""
+                    )
+
+                    tool_calls = []
+                    for tool_call in message.tool_calls:
+                        tool_calls.append(
+                            conversation.ToolCall(
+                                id=tool_call.id,
+                                tool_name=tool_call.function.name,
+                                tool_args=json.loads(tool_call.function.arguments)
+                            )
                         )
-                    ):
-                        LOGGER.debug("Yielded content from async_add_assistant_content: %s", _content)
-                    messages.append({"role": "assistant", "content": full_response})
+
+                    assistant_content.tool_calls = tool_calls
+                    await chat_log.async_add_assistant_content(assistant_content)
+                    messages.append({
+                        "role": "assistant",
+                        "content": message.content,
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "type": "function",
+                                "function": {
+                                    "name": tc.tool_name,
+                                    "arguments": json.dumps(tc.tool_args)
+                                }
+                            }
+                            for tc in tool_calls
+                        ]
+                    })
+
+                    # Execute tool calls
+                    for tool_call in message.tool_calls:
+                        try:
+                            tool_name = tool_call.function.name
+                            tool_args = json.loads(tool_call.function.arguments)
+
+                            # Execute the tool using LLM API
+                            tool_result = await llm.async_get_api(self.hass, options[CONF_LLM_HASS_API]).async_call_tool(
+                                tool_name, tool_args
+                            )
+
+                            # Add tool result to messages
+                            await chat_log.async_add_tool_result(
+                                conversation.ToolResultContent(
+                                    tool_call_id=tool_call.id,
+                                    tool_result=tool_result
+                                )
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps(tool_result)
+                            })
+
+                        except Exception as err:
+                            LOGGER.error("Error executing tool %s: %s", tool_call.function.name, err)
+                            # Add error result
+                            await chat_log.async_add_tool_result(
+                                conversation.ToolResultContent(
+                                    tool_call_id=tool_call.id,
+                                    tool_result={"error": str(err)}
+                                )
+                            )
+                            messages.append({
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps({"error": str(err)})
+                            })
+
+                    # Continue the loop to get the final response
+                    continue
+
                 else:
-                    LOGGER.warning("No assistant content received from API response")
+                    # No tool calls, this is the final response
+                    full_response = message.content or ""
+                    # Strip any JSON metadata from the end of the response
+                    full_response = _strip_json_from_response(full_response)
+                    LOGGER.debug("API response: %s", full_response)
+
+                    # Add the response as AssistantContent
+                    if full_response:
+                        await chat_log.async_add_assistant_content(
+                            conversation.AssistantContent(
+                                agent_id=user_input.agent_id,
+                                content=full_response
+                            )
+                        )
+                        messages.append({"role": "assistant", "content": full_response})
+                    else:
+                        LOGGER.warning("No assistant content received from API response")
 
                 # Log usage stats if available
                 if result.usage:
@@ -294,6 +422,12 @@ class OpenAIConversationEntity(
                         }
                     )
 
+                # Check finish reason
+                if choice.finish_reason == "length":
+                    raise TokenLengthExceededError(options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS))
+
+                break  # Exit loop after successful response
+
             except openai.RateLimitError as err:
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
@@ -301,19 +435,21 @@ class OpenAIConversationEntity(
                 LOGGER.error("Error talking to xAI: %s", err)
                 raise HomeAssistantError("Error talking to xAI") from err
 
-            break  # Exit loop since no tools are used
-
+        # Create intent response
         intent_response = intent.IntentResponse(language=user_input.language)
-        # Debug chat log content types
-        LOGGER.debug("chat_log.content types: %s", [type(c).__name__ for c in chat_log.content])
-        if not chat_log.content or not isinstance(chat_log.content[-1], conversation.AssistantContent):
-            LOGGER.warning(
-                "Last content item is not AssistantContent: %s",
-                type(chat_log.content[-1]).__name__ if chat_log.content else "Empty chat log"
-            )
-            intent_response.async_set_speech("Sorry, I couldn't generate a response.")
+
+        # Get the last assistant content for speech
+        last_assistant_content = None
+        for content in reversed(chat_log.content):
+            if isinstance(content, conversation.AssistantContent):
+                last_assistant_content = content
+                break
+
+        if last_assistant_content and last_assistant_content.content:
+            intent_response.async_set_speech(last_assistant_content.content)
         else:
-            intent_response.async_set_speech(full_response or "")
+            intent_response.async_set_speech("Sorry, I couldn't generate a response.")
+
         return conversation.ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,

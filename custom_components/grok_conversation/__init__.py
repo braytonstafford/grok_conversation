@@ -39,17 +39,18 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_FILENAMES,
     CONF_MAX_TOKENS,
+    CONF_PAYLOAD_TEMPLATE,
     CONF_PROMPT,
-    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
     LOGGER,
     RECOMMENDED_CHAT_MODEL,
+    RECOMMENDED_IMAGE_GENERATION_MODEL,
     RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
+    RECOMMENDED_VISION_MODEL,
 )
 
 SERVICE_GENERATE_IMAGE = "generate_image"
@@ -89,7 +90,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
         try:
             response: ImagesResponse = await client.images.generate(
-                model="grok-3-vision",
+                model=RECOMMENDED_IMAGE_GENERATION_MODEL,
                 prompt=call.data[CONF_PROMPT],
                 size=call.data["size"],
                 quality=call.data["quality"],
@@ -100,10 +101,16 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         except openai.OpenAIError as err:
             raise HomeAssistantError(f"Error generating image: {err}") from err
 
-        return response.data[0].model_dump(exclude={"b64_json"})
+        # Return format matching OpenAI integration: url and revised_prompt
+        image_data = response.data[0]
+        result = {"url": image_data.url}
+        # Add revised_prompt if available in response
+        if hasattr(image_data, "revised_prompt") and image_data.revised_prompt:
+            result["revised_prompt"] = image_data.revised_prompt
+        return result
 
     async def send_prompt(call: ServiceCall) -> ServiceResponse:
-        """Send a prompt to ChatGPT and return the response."""
+        """Send a prompt to Grok and return the response."""
         entry_id = call.data["config_entry"]
         entry = hass.config_entries.async_get_entry(entry_id)
 
@@ -114,14 +121,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 translation_placeholders={"config_entry": entry_id},
             )
 
-        model: str = entry.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
         client: openai.AsyncClient = entry.runtime_data
 
         content: ResponseInputMessageContentListParam = [
             ResponseInputTextParam(type="input_text", text=call.data[CONF_PROMPT])
         ]
 
+        has_images = False
         def append_files_to_content() -> None:
+            nonlocal has_images
             for filename in call.data[CONF_FILENAMES]:
                 if not hass.config.is_allowed_path(filename):
                     raise HomeAssistantError(
@@ -137,6 +145,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                         "Only images are supported by the xAI API,"
                         f"`{filename}` is not an image file"
                     )
+                has_images = True
                 content.append(
                     ResponseInputImageParam(
                         type="input_image",
@@ -148,6 +157,12 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
         if CONF_FILENAMES in call.data:
             await hass.async_add_executor_job(append_files_to_content)
+
+        # Use vision model when images are provided, otherwise use chat model
+        if has_images:
+            model: str = RECOMMENDED_VISION_MODEL
+        else:
+            model: str = entry.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
 
         messages: ResponseInputParam = [
             EasyInputMessageParam(type="message", role="user", content=content)
@@ -166,13 +181,6 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 ),
                 "user": call.context.user_id,
             }
-
-            if model.startswith("o"):
-                model_args["reasoning"] = {
-                    "effort": entry.options.get(
-                        CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
-                    )
-                }
 
             response: Response = await client.chat.completions.create(**model_args)
 
