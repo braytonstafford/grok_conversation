@@ -27,11 +27,13 @@
           "max_tokens": "Maximum tokens to return in response",
           "temperature": "Temperature",
           "top_p": "Top P",
+          "reasoning_effort": "Reasoning Effort",
           "llm_hass_api": "[%key:common::config_flow::data::llm_hass_api%]",
           "recommended": "Recommended model settings"
         },
         "data_description": {
-          "prompt": "Instruct how the LLM should respond. This can be a template."
+          "prompt": "Instruct how the LLM should respond. This can be a template.",
+          "reasoning_effort": "Controls the amount of reasoning effort for Grok reasoning models. Options: low, medium, high."
         }
       }
     },

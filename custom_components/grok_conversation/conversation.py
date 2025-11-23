@@ -31,12 +31,14 @@ from .const import (
     CONF_CHAT_MODEL,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
+    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
     LOGGER,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
+    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
 )
@@ -302,6 +304,11 @@ class OpenAIConversationEntity(
                 "user": chat_log.conversation_id,
                 "stream": False,
             }
+
+            # Add reasoning_effort if the model supports it (Grok reasoning models)
+            reasoning_effort = options.get(CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT)
+            if reasoning_effort:
+                model_args["reasoning_effort"] = reasoning_effort
 
             if tools:
                 model_args["tools"] = tools

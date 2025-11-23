@@ -41,6 +41,7 @@ from .const import (
     CONF_MAX_TOKENS,
     CONF_PAYLOAD_TEMPLATE,
     CONF_PROMPT,
+    CONF_REASONING_EFFORT,
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
@@ -48,6 +49,7 @@ from .const import (
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_IMAGE_GENERATION_MODEL,
     RECOMMENDED_MAX_TOKENS,
+    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     RECOMMENDED_VISION_MODEL,
@@ -181,6 +183,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 ),
                 "user": call.context.user_id,
             }
+
+            # Add reasoning_effort if the model supports it (Grok reasoning models)
+            reasoning_effort = entry.options.get(CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT)
+            if reasoning_effort:
+                model_args["reasoning_effort"] = reasoning_effort
 
             response: Response = await client.chat.completions.create(**model_args)
 
