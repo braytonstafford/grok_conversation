@@ -27,6 +27,8 @@ from homeassistant.helpers.selector import (
     SelectSelectorConfig,
     SelectSelectorMode,
     TemplateSelector,
+    TextSelector,
+    TextSelectorConfig,
 )
 from homeassistant.helpers.typing import VolDictType
 
@@ -241,8 +243,16 @@ def openai_config_option_schema(
                 default=RECOMMENDED_REASONING_EFFORT,
             ): SelectSelector(
                 SelectSelectorConfig(
+<<<<<<< Current (Your changes)
                     options=["low", "medium", "high"],
                     mode=SelectSelectorMode.DROPDOWN,
+=======
+                    options=[
+                        SelectOptionDict(value="low", label="Low"),
+                        SelectOptionDict(value="medium", label="Medium"),
+                        SelectOptionDict(value="high", label="High"),
+                    ]
+>>>>>>> Incoming (Background Agent changes)
                 )
             ),
         }

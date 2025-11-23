@@ -306,8 +306,9 @@ class OpenAIConversationEntity(
             }
 
             # Add reasoning_effort if the model supports it (Grok reasoning models)
-            reasoning_effort = options.get(CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT)
-            if reasoning_effort:
+            # Only add reasoning_effort for models that support it (models with "reasoning" in the name)
+            reasoning_effort = options.get(CONF_REASONING_EFFORT)
+            if reasoning_effort and reasoning_effort != "none" and "reasoning" in model.lower():
                 model_args["reasoning_effort"] = reasoning_effort
 
             if tools:
@@ -340,7 +341,8 @@ class OpenAIConversationEntity(
                         )
 
                     assistant_content.tool_calls = tool_calls
-                    await chat_log.async_add_assistant_content(assistant_content)
+                    async for _ in chat_log.async_add_assistant_content(assistant_content):
+                        pass  # Consume the async generator
                     messages.append({
                         "role": "assistant",
                         "content": message.content,
@@ -369,12 +371,13 @@ class OpenAIConversationEntity(
                             )
 
                             # Add tool result to messages
-                            await chat_log.async_add_tool_result(
+                            async for _ in chat_log.async_add_tool_result(
                                 conversation.ToolResultContent(
                                     tool_call_id=tool_call.id,
                                     tool_result=tool_result
                                 )
-                            )
+                            ):
+                                pass  # Consume the async generator
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
@@ -384,12 +387,13 @@ class OpenAIConversationEntity(
                         except Exception as err:
                             LOGGER.error("Error executing tool %s: %s", tool_call.function.name, err)
                             # Add error result
-                            await chat_log.async_add_tool_result(
+                            async for _ in chat_log.async_add_tool_result(
                                 conversation.ToolResultContent(
                                     tool_call_id=tool_call.id,
                                     tool_result={"error": str(err)}
                                 )
-                            )
+                            ):
+                                pass  # Consume the async generator
                             messages.append({
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
@@ -408,12 +412,13 @@ class OpenAIConversationEntity(
 
                     # Add the response as AssistantContent
                     if full_response:
-                        await chat_log.async_add_assistant_content(
+                        async for _ in chat_log.async_add_assistant_content(
                             conversation.AssistantContent(
                                 agent_id=user_input.agent_id,
                                 content=full_response
                             )
-                        )
+                        ):
+                            pass  # Consume the async generator
                         messages.append({"role": "assistant", "content": full_response})
                     else:
                         LOGGER.warning("No assistant content received from API response")
@@ -439,8 +444,11 @@ class OpenAIConversationEntity(
                 LOGGER.error("Rate limited by xAI: %s", err)
                 raise HomeAssistantError("Rate limited or insufficient funds") from err
             except openai.OpenAIError as err:
-                LOGGER.error("Error talking to xAI: %s", err)
-                raise HomeAssistantError("Error talking to xAI") from err
+                LOGGER.error("Error talking to xAI: %s", err, exc_info=True)
+                raise HomeAssistantError(f"Error talking to xAI: {err}") from err
+            except Exception as err:
+                LOGGER.error("Unexpected error in conversation handler: %s", err, exc_info=True)
+                raise HomeAssistantError(f"Unexpected error: {err}") from err
 
         # Create intent response
         intent_response = intent.IntentResponse(language=user_input.language)

@@ -185,8 +185,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             }
 
             # Add reasoning_effort if the model supports it (Grok reasoning models)
-            reasoning_effort = entry.options.get(CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT)
-            if reasoning_effort:
+            # Only add reasoning_effort for models that support it (models with "reasoning" in the name)
+            reasoning_effort = entry.options.get(CONF_REASONING_EFFORT)
+            if reasoning_effort and reasoning_effort != "none" and "reasoning" in model.lower():
                 model_args["reasoning_effort"] = reasoning_effort
 
             response: Response = await client.chat.completions.create(**model_args)

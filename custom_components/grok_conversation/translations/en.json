@@ -27,6 +27,7 @@
                   "prompt": "Prompt Template",
                   "temperature": "Temperature",
                   "top_p": "Top P",
+                  "reasoning_effort": "Reasoning effort",
                   "max_function_calls_per_conversation": "Maximum function calls per conversation",
                   "functions": "Functions",
                   "attach_username": "Attach Username to Message",
