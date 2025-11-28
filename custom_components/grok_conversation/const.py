@@ -17,7 +17,10 @@ CONF_TOP_P = "top_p"
 EVENT_AUTOMATION_REGISTERED = "automation_registered"
 OPENAI_BASE_URL = "https://api.x.ai/v1"
 SERVICE_QUERY_IMAGE = "query_image"
-RECOMMENDED_CHAT_MODEL = "grok-4"
+# Recommended chat model - grok-4-fast provides fast responses with grok-4 capabilities
+# Other available models: grok-2-beta (faster but less capable), grok-4 (slower but most capable)
+# Fast variants: grok-3-mini-fast, grok-3-fast, grok-4-fast (if available in your account)
+RECOMMENDED_CHAT_MODEL = "grok-4-fast"
 RECOMMENDED_VISION_MODEL = "grok-2-vision-1212"
 RECOMMENDED_IMAGE_GENERATION_MODEL = "grok-2-image-1212"
 RECOMMENDED_MAX_TOKENS = 150
