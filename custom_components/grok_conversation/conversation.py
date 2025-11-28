@@ -228,10 +228,8 @@ class OpenAIConversationEntity(
             model="Grok",
             entry_type=dr.DeviceEntryType.SERVICE,
         )
-        if self.entry.options.get(CONF_LLM_HASS_API):
-            self._attr_supported_features = (
-                conversation.ConversationEntityFeature.CONTROL
-            )
+        # Supported features will be set in async_added_to_hass when hass is available
+        self._attr_supported_features = conversation.ConversationEntityFeature(0)
 
     @property
     def supported_languages(self) -> list[str] | Literal["*"]:
@@ -241,6 +239,22 @@ class OpenAIConversationEntity(
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
         await super().async_added_to_hass()
+        
+        # Update supported features based on LLM API configuration
+        llm_hass_api = self.entry.options.get(CONF_LLM_HASS_API)
+        if llm_hass_api and llm_hass_api != "none":
+            try:
+                # Try to get the API to verify it exists
+                llm.async_get_api(self.hass, llm_hass_api)
+                self._attr_supported_features = (
+                    conversation.ConversationEntityFeature.CONTROL
+                )
+            except Exception:
+                # API not available, no control features
+                self._attr_supported_features = conversation.ConversationEntityFeature(0)
+        else:
+            self._attr_supported_features = conversation.ConversationEntityFeature(0)
+        
         assist_pipeline.async_migrate_engine(
             self.hass, "conversation", self.entry.entry_id, self.entity_id
         )
@@ -282,16 +296,38 @@ class OpenAIConversationEntity(
         client = self.entry.runtime_data
 
         # Get exposed entities if LLM HASS API is enabled
+        llm_api = None
         exposed_entities = []
-        if options.get(CONF_LLM_HASS_API):
-            exposed_entities = llm.async_get_api(self.hass, options[CONF_LLM_HASS_API]).async_get_exposed_entities()
+        llm_hass_api = options.get(CONF_LLM_HASS_API)
+        if llm_hass_api and llm_hass_api != "none":
+            try:
+                llm_api = llm.async_get_api(self.hass, llm_hass_api)
+                exposed_entities = llm_api.async_get_exposed_entities()
+            except Exception as err:
+                LOGGER.warning(
+                    "Failed to get LLM API %s: %s", llm_hass_api, err, exc_info=True
+                )
+                exposed_entities = []
 
         # To prevent infinite loops, we limit the number of iterations
         for _iteration in range(MAX_TOOL_ITERATIONS):
             # Prepare tools for the API call if we have exposed entities
             tools = []
-            if exposed_entities:
-                tools = [_format_tool(tool, None) for tool in llm.async_get_api(self.hass, options[CONF_LLM_HASS_API]).async_get_tools()]
+            if llm_api and exposed_entities:
+                try:
+                    tools = [_format_tool(tool, None) for tool in llm_api.async_get_tools()]
+                    LOGGER.debug("Prepared %d tools for API call", len(tools))
+                except Exception as err:
+                    LOGGER.error(
+                        "Failed to get tools from LLM API: %s", err, exc_info=True
+                    )
+                    tools = []
+            elif llm_api and not exposed_entities:
+                LOGGER.warning(
+                    "LLM HASS API '%s' is configured but no entities are exposed. "
+                    "Go to Settings > Voice Assistants > Expose entities to expose entities.",
+                    llm_hass_api
+                )
 
             model_args = {
                 "model": model,
@@ -360,15 +396,29 @@ class OpenAIConversationEntity(
                     })
 
                     # Execute tool calls
+                    LOGGER.debug("Received %d tool calls from API", len(message.tool_calls))
                     for tool_call in message.tool_calls:
                         try:
                             tool_name = tool_call.function.name
                             tool_args = json.loads(tool_call.function.arguments)
+                            LOGGER.debug("Executing tool: %s with args: %s", tool_name, tool_args)
 
                             # Execute the tool using LLM API
-                            tool_result = await llm.async_get_api(self.hass, options[CONF_LLM_HASS_API]).async_call_tool(
-                                tool_name, tool_args
-                            )
+                            if not llm_api:
+                                tool_result = {"error": "LLM HASS API not configured"}
+                                LOGGER.error(
+                                    "Cannot execute tool %s: LLM HASS API not configured",
+                                    tool_name
+                                )
+                            else:
+                                try:
+                                    tool_result = await llm_api.async_call_tool(tool_name, tool_args)
+                                    LOGGER.debug("Tool %s executed successfully: %s", tool_name, tool_result)
+                                except Exception as err:
+                                    LOGGER.error(
+                                        "Error executing tool %s: %s", tool_name, err, exc_info=True
+                                    )
+                                    tool_result = {"error": str(err)}
 
                             # Add tool result to messages
                             async for _ in chat_log.async_add_tool_result(

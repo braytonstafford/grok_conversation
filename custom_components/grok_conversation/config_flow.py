@@ -151,10 +151,16 @@ class OpenAIOptionsFlow(OptionsFlow):
             if user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
                 if user_input[CONF_LLM_HASS_API] == "none":
                     user_input.pop(CONF_LLM_HASS_API)
+                elif user_input[CONF_LLM_HASS_API]:
+                    # Validate that the LLM API exists
+                    try:
+                        llm.async_get_api(self.hass, user_input[CONF_LLM_HASS_API])
+                    except Exception:
+                        errors[CONF_LLM_HASS_API] = "llm_api_not_found"
 
                 if user_input.get(CONF_CHAT_MODEL) in UNSUPPORTED_MODELS:
                     errors[CONF_CHAT_MODEL] = "model_not_supported"
-                else:
+                elif not errors:
                     return self.async_create_entry(title="", data=user_input)
             else:
                 # Re-render the options again, now with the recommended options shown/hidden
