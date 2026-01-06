@@ -452,13 +452,12 @@ class OpenAIConversationEntity(
                     # Add assistant message with tool calls
                     assistant_content = conversation.AssistantContent(
                         agent_id=user_input.agent_id,
-                        content=message.content or ""
+                        content=message.content or "",
+                        tool_calls=message.tool_calls
                     )
 
                     # Store the OpenAI tool call objects directly
                     tool_calls = message.tool_calls
-
-                    assistant_content.tool_calls = tool_calls
                     async for _ in chat_log.async_add_assistant_content(assistant_content):
                         pass  # Consume the async generator
                     messages.append({
