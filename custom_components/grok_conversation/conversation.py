@@ -473,10 +473,10 @@ class OpenAIConversationEntity(
                         "tool_calls": [
                             {
                                 "id": tc.id,
-                                "type": "function",
+                                "type": tc.type,
                                 "function": {
-                                    "name": tc.tool_name,
-                                    "arguments": json.dumps(tc.tool_args)
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments
                                 }
                             }
                             for tc in tool_calls
