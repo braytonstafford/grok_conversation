@@ -13,7 +13,6 @@ from openai.types.responses import (
     ResponseInputParam,
     ToolParam,
 )
-from openai.types.responses.response_input_param import FunctionCallOutput
 from openai.types.chat import ChatCompletionChunk
 from voluptuous_openapi import convert
 from typing import AsyncIterator
@@ -114,14 +113,6 @@ def _convert_content_to_param(
 ) -> ResponseInputParam:
     """Convert any native chat message for this agent to the native format."""
     messages: ResponseInputParam = []
-    if isinstance(content, conversation.ToolResultContent):
-        return [
-            FunctionCallOutput(
-                type="function_call_output",
-                call_id=content.tool_call_id,
-                output=json.dumps(content.tool_result),
-            )
-        ]
 
     if content.content:
         role: Literal["user", "assistant", "system", "developer"] = content.role
@@ -141,6 +132,17 @@ def _convert_content_to_param(
             )
             for tool_call in content.tool_calls
         )
+
+    if isinstance(content, conversation.ToolResultContent):
+        messages.append(
+            EasyInputMessageParam(
+                type="message",
+                role="tool",
+                content=json.dumps(content.tool_result),
+                tool_call_id=content.tool_call_id,
+            )
+        )
+
     return messages
 
 
@@ -285,6 +287,19 @@ class OpenAIConversationEntity(
         """Call the API with function calling support."""
         options = self.entry.options
 
+        # Debug logging for device/satellite requests
+        LOGGER.info(
+            "Grok conversation agent handling message - device_id: %s, text: %s, language: %s, agent_id: %s",
+            user_input.device_id,
+            user_input.text,
+            user_input.language,
+            user_input.agent_id
+        )
+
+        # Log LLM API availability
+        llm_hass_api = options.get(CONF_LLM_HASS_API)
+        LOGGER.debug("LLM HASS API config: %s", llm_hass_api)
+
         try:
             await chat_log.async_provide_llm_data(
                 user_input.as_llm_context(DOMAIN),
@@ -292,7 +307,9 @@ class OpenAIConversationEntity(
                 options.get(CONF_PROMPT),
                 user_input.extra_system_prompt,
             )
+            LOGGER.debug("LLM data provided successfully, chat_log.llm_api: %s", chat_log.llm_api)
         except conversation.ConverseError as err:
+            LOGGER.error("ConverseError in async_provide_llm_data: %s", err)
             return err.as_conversation_result()
 
         model = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
@@ -301,6 +318,7 @@ class OpenAIConversationEntity(
             for content in chat_log.content
             for m in _convert_content_to_param(content)
         ]
+        LOGGER.debug("Prepared %d messages for API call", len(messages))
 
         client = self.entry.runtime_data
 
@@ -339,6 +357,7 @@ class OpenAIConversationEntity(
             try:
                 LOGGER.debug("Sending API request: %s", model_args)
                 result = await client.chat.completions.create(**model_args)
+                LOGGER.debug("API response received: %s", result.choices[0].message.content if result.choices else "No choices")
 
                 choice = result.choices[0]
                 message = choice.message
@@ -520,15 +539,19 @@ class OpenAIConversationEntity(
                 break
 
         if last_assistant_content and last_assistant_content.content:
+            LOGGER.debug("Setting speech response: %s", last_assistant_content.content)
             intent_response.async_set_speech(last_assistant_content.content)
         else:
+            LOGGER.warning("No assistant content found, using fallback response")
             intent_response.async_set_speech("Sorry, I couldn't generate a response.")
 
-        return conversation.ConversationResult(
+        result = conversation.ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,
             continue_conversation=chat_log.continue_conversation,
         )
+        LOGGER.debug("Returning conversation result: %s", result)
+        return result
 
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry
