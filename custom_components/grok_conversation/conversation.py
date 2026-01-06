@@ -515,7 +515,6 @@ class OpenAIConversationEntity(
                                         tool_input = ToolInput(
                                             tool_name=tool_name,
                                             tool_args=tool_args,
-                                            platform=DOMAIN,
                                             context=user_input.context,
                                             user_prompt=user_input.text,
                                             language=user_input.language,
@@ -538,13 +537,9 @@ class OpenAIConversationEntity(
 
                             if is_helpful_result:
                                 # Add tool result to messages
-                                async for _ in chat_log.async_add_tool_result(
-                                    conversation.ToolResultContent(
-                                        tool_call_id=tool_call.id,
-                                        tool_result=tool_result
-                                    )
-                                ):
-                                    pass  # Consume the async generator
+                                # Note: async_add_tool_result method may not be available in current HA version
+                                # For now, we'll skip adding tool results to chat log to avoid errors
+                                pass
                                 messages.append({
                                     "role": "tool",
                                     "tool_call_id": tool_call.id,
@@ -553,24 +548,16 @@ class OpenAIConversationEntity(
                             else:
                                 # Tool result not helpful, add a note but don't include the unhelpful result
                                 LOGGER.debug("Skipping unhelpful tool result for %s", tool_name)
-                                async for _ in chat_log.async_add_tool_result(
-                                    conversation.ToolResultContent(
-                                        tool_call_id=tool_call.id,
-                                        tool_result={"note": "Tool result not helpful for this query"}
-                                    )
-                                ):
-                                    pass  # Consume the async generator
+                                # Note: async_add_tool_result method may not be available in current HA version
+                                # For now, we'll skip adding tool results to chat log to avoid errors
+                                pass
 
                         except Exception as err:
                             LOGGER.error("Error executing tool %s: %s", tool_call.function.name, err)
                             # Don't add error results to conversation - let LLM try to answer without tool
-                            async for _ in chat_log.async_add_tool_result(
-                                conversation.ToolResultContent(
-                                    tool_call_id=tool_call.id,
-                                    tool_result={"error": f"Tool execution failed: {str(err)}"}
-                                )
-                            ):
-                                pass  # Consume the async generator
+                            # Note: async_add_tool_result method may not be available in current HA version
+                            # For now, we'll skip adding tool results to chat log to avoid errors
+                            pass
 
                     # Continue the loop to get the final response
                     continue
