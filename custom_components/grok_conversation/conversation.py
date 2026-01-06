@@ -298,6 +298,27 @@ class OpenAIConversationEntity(
                 continue_conversation=False,
             )
 
+    def _is_tool_result_helpful(self, tool_name: str, tool_result: Any) -> bool:
+        """Determine if a tool result is helpful for the conversation."""
+        if isinstance(tool_result, dict):
+            # Check for error responses
+            if "error" in tool_result:
+                return False
+
+            # Check for empty or unhelpful responses
+            speech = tool_result.get("speech", {}).get("plain", {}).get("speech", "")
+            if speech in ["Not any", "No information available", ""] or not speech:
+                return False
+
+            # Check if response indicates no relevant data
+            speech_lower = speech.lower()
+            if any(phrase in speech_lower for phrase in [
+                "not found", "no data", "unavailable", "not available", "not any"
+            ]):
+                return False
+
+        return True
+
     async def _async_handle_message_inner(
         self,
         user_input: conversation.ConversationInput,
@@ -467,35 +488,45 @@ class OpenAIConversationEntity(
                                     )
                                     tool_result = {"error": str(err)}
 
-                            # Add tool result to messages
-                            async for _ in chat_log.async_add_tool_result(
-                                conversation.ToolResultContent(
-                                    tool_call_id=tool_call.id,
-                                    tool_result=tool_result
-                                )
-                            ):
-                                pass  # Consume the async generator
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": json.dumps(tool_result)
-                            })
+                            # Check if tool result is useful before adding to conversation
+                            is_helpful_result = self._is_tool_result_helpful(tool_name, tool_result)
+                            LOGGER.debug("Tool %s result helpful: %s, result: %s", tool_name, is_helpful_result, tool_result)
+
+                            if is_helpful_result:
+                                # Add tool result to messages
+                                async for _ in chat_log.async_add_tool_result(
+                                    conversation.ToolResultContent(
+                                        tool_call_id=tool_call.id,
+                                        tool_result=tool_result
+                                    )
+                                ):
+                                    pass  # Consume the async generator
+                                messages.append({
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": json.dumps(tool_result)
+                                })
+                            else:
+                                # Tool result not helpful, add a note but don't include the unhelpful result
+                                LOGGER.debug("Skipping unhelpful tool result for %s", tool_name)
+                                async for _ in chat_log.async_add_tool_result(
+                                    conversation.ToolResultContent(
+                                        tool_call_id=tool_call.id,
+                                        tool_result={"note": "Tool result not helpful for this query"}
+                                    )
+                                ):
+                                    pass  # Consume the async generator
 
                         except Exception as err:
                             LOGGER.error("Error executing tool %s: %s", tool_call.function.name, err)
-                            # Add error result
+                            # Don't add error results to conversation - let LLM try to answer without tool
                             async for _ in chat_log.async_add_tool_result(
                                 conversation.ToolResultContent(
                                     tool_call_id=tool_call.id,
-                                    tool_result={"error": str(err)}
+                                    tool_result={"error": f"Tool execution failed: {str(err)}"}
                                 )
                             ):
                                 pass  # Consume the async generator
-                            messages.append({
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": json.dumps({"error": str(err)})
-                            })
 
                     # Continue the loop to get the final response
                     continue

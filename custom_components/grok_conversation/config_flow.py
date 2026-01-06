@@ -41,6 +41,7 @@ from .const import (
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
+    GROK_SYSTEM_PROMPT,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_REASONING_EFFORT,
@@ -59,7 +60,7 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 RECOMMENDED_OPTIONS = {
     CONF_RECOMMENDED: True,
-    CONF_PROMPT: llm.DEFAULT_INSTRUCTIONS_PROMPT,
+    CONF_PROMPT: GROK_SYSTEM_PROMPT,
 }
 
 
@@ -223,7 +224,7 @@ def openai_config_option_schema(
             CONF_PROMPT,
             description={
                 "suggested_value": options.get(
-                    CONF_PROMPT, llm.DEFAULT_INSTRUCTIONS_PROMPT
+                    CONF_PROMPT, GROK_SYSTEM_PROMPT
                 )
             },
         ): TemplateSelector(),
