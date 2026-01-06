@@ -4,8 +4,7 @@ import mimetypes
 from pathlib import Path
 from urllib.parse import urlparse
 
-from openai import AsyncOpenAI
-from openai._exceptions import OpenAIError
+from openai import AsyncOpenAI, OpenAIError
 from openai.types.chat.chat_completion_content_part_image_param import (
     ChatCompletionContentPartImageParam,
 )
@@ -114,7 +113,7 @@ def to_image_param(hass: HomeAssistant, image) -> ChatCompletionContentPartImage
     return image
 
 
-def encode_image(image_path):
+def encode_image(image_path: str) -> str:
     """Convert to base64 encoded image."""
     with open(image_path, "rb") as image_file:
         return base64.b64encode(image_file.read()).decode("utf-8")

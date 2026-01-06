@@ -45,6 +45,9 @@ from .const import (
     CONF_TEMPERATURE,
     CONF_TOP_P,
     DOMAIN,
+    IMAGE_QUALITIES,
+    IMAGE_SIZES,
+    IMAGE_STYLES,
     LOGGER,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_IMAGE_GENERATION_MODEL,
@@ -66,11 +69,26 @@ type OpenAIConfigEntry = ConfigEntry[openai.AsyncClient]
 
 def encode_file(file_path: str) -> tuple[str, str]:
     """Return base64 version of file contents."""
-    mime_type, _ = guess_file_type(file_path)
-    if mime_type is None:
-        mime_type = "application/octet-stream"
-    with open(file_path, "rb") as image_file:
-        return (mime_type, base64.b64encode(image_file.read()).decode("utf-8"))
+    try:
+        mime_type, _ = guess_file_type(file_path)
+        if mime_type is None:
+            mime_type = "application/octet-stream"
+        with open(file_path, "rb") as image_file:
+            return (mime_type, base64.b64encode(image_file.read()).decode("utf-8"))
+    except (OSError, IOError) as err:
+        raise HomeAssistantError(f"Error reading file {file_path}: {err}") from err
+
+
+def _validate_config_entry(hass: HomeAssistant, entry_id: str) -> OpenAIConfigEntry:
+    """Validate and return config entry."""
+    entry = hass.config_entries.async_get_entry(entry_id)
+    if entry is None or entry.domain != DOMAIN:
+        raise ServiceValidationError(
+            translation_domain=DOMAIN,
+            translation_key="invalid_config_entry",
+            translation_placeholders={"config_entry": entry_id},
+        )
+    return entry
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -78,16 +96,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async def render_image(call: ServiceCall) -> ServiceResponse:
         """Render an image with grok."""
-        entry_id = call.data["config_entry"]
-        entry = hass.config_entries.async_get_entry(entry_id)
-
-        if entry is None or entry.domain != DOMAIN:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="invalid_config_entry",
-                translation_placeholders={"config_entry": entry_id},
-            )
-
+        entry = _validate_config_entry(hass, call.data["config_entry"])
         client: openai.AsyncClient = entry.runtime_data
 
         try:
@@ -113,16 +122,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
     async def send_prompt(call: ServiceCall) -> ServiceResponse:
         """Send a prompt to Grok and return the response."""
-        entry_id = call.data["config_entry"]
-        entry = hass.config_entries.async_get_entry(entry_id)
-
-        if entry is None or entry.domain != DOMAIN:
-            raise ServiceValidationError(
-                translation_domain=DOMAIN,
-                translation_key="invalid_config_entry",
-                translation_placeholders={"config_entry": entry_id},
-            )
-
+        entry = _validate_config_entry(hass, call.data["config_entry"])
         client: openai.AsyncClient = entry.runtime_data
 
         content: ResponseInputMessageContentListParam = [
@@ -231,11 +231,9 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     }
                 ),
                 vol.Required(CONF_PROMPT): cv.string,
-                vol.Optional("size", default="1024x1024"): vol.In(
-                    ("1024x1024", "1024x1792", "1792x1024")
-                ),
-                vol.Optional("quality", default="standard"): vol.In(("standard", "hd")),
-                vol.Optional("style", default="vivid"): vol.In(("vivid", "natural")),
+                vol.Optional("size", default="1024x1024"): vol.In(IMAGE_SIZES),
+                vol.Optional("quality", default="standard"): vol.In(IMAGE_QUALITIES),
+                vol.Optional("style", default="vivid"): vol.In(IMAGE_STYLES),
             }
         ),
         supports_response=SupportsResponse.ONLY,

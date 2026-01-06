@@ -5,7 +5,7 @@ This is a custom component of Home Assistant.
 Derived from [OpenAI Conversation](https://www.home-assistant.io/integrations/openai_conversation/) but uses the xAI API URL [(https://api.x.ai/v1)](https://api.x.ai/v1).
 
 ## How it works
-xAI Grok Conversation uses OpenAI's python package to call to call the xAI API URL to interact with the latest version of the Grok LLM, see xAI [documentation]([text](https://docs.x.ai/docs)).
+xAI Grok Conversation uses OpenAI's python package to call to call the xAI API URL to interact with the latest version of the Grok LLM, see xAI [documentation](https://docs.x.ai/docs).
 
 ## Installation
 1. Install via registering as a custom repository of HACS or by copying `grok_conversation` folder into `<config directory>/custom_components`
@@ -20,7 +20,7 @@ xAI Grok Conversation uses OpenAI's python package to call to call the xAI API U
     <details>
 
     <summary>Screenshot</summary>
-    <img width="500" alt="Select a conversaion agent in Home Assistant" src="https://www.braytonstafford.com/content/images/2025/01/image-12.png">
+    <img width="500" alt="Select a conversation agent in Home Assistant" src="https://www.braytonstafford.com/content/images/2025/01/image-12.png">
 
     </details>
 

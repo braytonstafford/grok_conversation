@@ -24,6 +24,7 @@ from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, intent, llm
+from homeassistant.helpers.llm import ToolInput
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
 
 from . import OpenAIConfigEntry
@@ -242,15 +243,23 @@ class OpenAIConversationEntity(
         
         # Update supported features based on LLM API configuration
         llm_hass_api = self.entry.options.get(CONF_LLM_HASS_API)
-        if llm_hass_api and llm_hass_api != "none":
-            try:
-                # Try to get the API to verify it exists
-                llm.async_get_api(self.hass, llm_hass_api)
-                self._attr_supported_features = (
-                    conversation.ConversationEntityFeature.CONTROL
-                )
-            except Exception:
-                # API not available, no control features
+        if llm_hass_api:
+            # Handle both list and string (for backward compatibility)
+            api_ids = llm_hass_api if isinstance(llm_hass_api, list) else [llm_hass_api]
+            # Remove "none" if present
+            api_ids = [api_id for api_id in api_ids if api_id != "none"]
+            
+            if api_ids:
+                try:
+                    # Try to get at least one API to verify it exists
+                    llm.async_get_api(self.hass, api_ids[0])
+                    self._attr_supported_features = (
+                        conversation.ConversationEntityFeature.CONTROL
+                    )
+                except Exception:
+                    # API not available, no control features
+                    self._attr_supported_features = conversation.ConversationEntityFeature(0)
+            else:
                 self._attr_supported_features = conversation.ConversationEntityFeature(0)
         else:
             self._attr_supported_features = conversation.ConversationEntityFeature(0)
@@ -277,11 +286,11 @@ class OpenAIConversationEntity(
         options = self.entry.options
 
         try:
-            await chat_log.async_update_llm_data(
-                DOMAIN,
-                user_input,
+            await chat_log.async_provide_llm_data(
+                user_input.as_llm_context(DOMAIN),
                 options.get(CONF_LLM_HASS_API),
                 options.get(CONF_PROMPT),
+                user_input.extra_system_prompt,
             )
         except conversation.ConverseError as err:
             return err.as_conversation_result()
@@ -295,39 +304,15 @@ class OpenAIConversationEntity(
 
         client = self.entry.runtime_data
 
-        # Get exposed entities if LLM HASS API is enabled
-        llm_api = None
-        exposed_entities = []
-        llm_hass_api = options.get(CONF_LLM_HASS_API)
-        if llm_hass_api and llm_hass_api != "none":
-            try:
-                llm_api = llm.async_get_api(self.hass, llm_hass_api)
-                exposed_entities = llm_api.async_get_exposed_entities()
-            except Exception as err:
-                LOGGER.warning(
-                    "Failed to get LLM API %s: %s", llm_hass_api, err, exc_info=True
-                )
-                exposed_entities = []
-
         # To prevent infinite loops, we limit the number of iterations
         for _iteration in range(MAX_TOOL_ITERATIONS):
-            # Prepare tools for the API call if we have exposed entities
-            tools = []
-            if llm_api and exposed_entities:
-                try:
-                    tools = [_format_tool(tool, None) for tool in llm_api.async_get_tools()]
-                    LOGGER.debug("Prepared %d tools for API call", len(tools))
-                except Exception as err:
-                    LOGGER.error(
-                        "Failed to get tools from LLM API: %s", err, exc_info=True
-                    )
-                    tools = []
-            elif llm_api and not exposed_entities:
-                LOGGER.warning(
-                    "LLM HASS API '%s' is configured but no entities are exposed. "
-                    "Go to Settings > Voice Assistants > Expose entities to expose entities.",
-                    llm_hass_api
-                )
+            # Prepare tools for the API call if LLM API is available
+            tools: list[dict[str, Any]] | None = None
+            if chat_log.llm_api:
+                tools = [
+                    _format_tool(tool, None) for tool in chat_log.llm_api.tools
+                ]
+                LOGGER.debug("Prepared %d tools for API call", len(tools))
 
             model_args = {
                 "model": model,
@@ -395,7 +380,7 @@ class OpenAIConversationEntity(
                         ]
                     })
 
-                    # Execute tool calls
+                    # Execute tool calls using LLM API
                     LOGGER.debug("Received %d tool calls from API", len(message.tool_calls))
                     for tool_call in message.tool_calls:
                         try:
@@ -403,17 +388,41 @@ class OpenAIConversationEntity(
                             tool_args = json.loads(tool_call.function.arguments)
                             LOGGER.debug("Executing tool: %s with args: %s", tool_name, tool_args)
 
-                            # Execute the tool using LLM API
-                            if not llm_api:
+                            # Execute the tool using LLM API from chat_log
+                            if not chat_log.llm_api:
                                 tool_result = {"error": "LLM HASS API not configured"}
                                 LOGGER.error(
                                     "Cannot execute tool %s: LLM HASS API not configured",
                                     tool_name
                                 )
-                            else:
-                                try:
-                                    tool_result = await llm_api.async_call_tool(tool_name, tool_args)
-                                    LOGGER.debug("Tool %s executed successfully: %s", tool_name, tool_result)
+                                    else:
+                                        try:
+                                            # Find the tool in the LLM API instance
+                                            tool = None
+                                            for t in chat_log.llm_api.tools:
+                                                if t.name == tool_name:
+                                                    tool = t
+                                                    break
+                                            
+                                            if tool is None:
+                                                tool_result = {"error": f"Tool {tool_name} not found"}
+                                                LOGGER.error("Tool %s not found in LLM API", tool_name)
+                                            else:
+                                                # Create ToolInput for the tool
+                                                tool_input = ToolInput(
+                                                    tool_name=tool_name,
+                                                    tool_args=tool_args,
+                                                    platform=DOMAIN,
+                                                    context=user_input.context,
+                                                    user_prompt=user_input.text,
+                                                    language=user_input.language,
+                                                    assistant="conversation",
+                                                    device_id=user_input.device_id,
+                                                )
+                                                tool_result = await tool.async_call(
+                                                    self.hass, tool_input, user_input.as_llm_context(DOMAIN)
+                                                )
+                                                LOGGER.debug("Tool %s executed successfully: %s", tool_name, tool_result)
                                 except Exception as err:
                                     LOGGER.error(
                                         "Error executing tool %s: %s", tool_name, err, exc_info=True

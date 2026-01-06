@@ -59,7 +59,6 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 
 RECOMMENDED_OPTIONS = {
     CONF_RECOMMENDED: True,
-    CONF_LLM_HASS_API: "none",  # Changed to disable tools by default
     CONF_PROMPT: llm.DEFAULT_INSTRUCTIONS_PROMPT,
 }
 
@@ -149,14 +148,34 @@ class OpenAIOptionsFlow(OptionsFlow):
 
         if user_input is not None:
             if user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
-                if user_input[CONF_LLM_HASS_API] == "none":
-                    user_input.pop(CONF_LLM_HASS_API)
-                elif user_input[CONF_LLM_HASS_API]:
-                    # Validate that the LLM API exists
-                    try:
-                        llm.async_get_api(self.hass, user_input[CONF_LLM_HASS_API])
-                    except Exception:
-                        errors[CONF_LLM_HASS_API] = "llm_api_not_found"
+                # Handle LLM HASS API selection (can be list or single value)
+                llm_hass_api = user_input.get(CONF_LLM_HASS_API)
+                if llm_hass_api:
+                    # Convert single value to list if needed, or handle list
+                    if isinstance(llm_hass_api, str):
+                        if llm_hass_api == "none":
+                            user_input.pop(CONF_LLM_HASS_API)
+                        else:
+                            # Convert to list for consistency
+                            user_input[CONF_LLM_HASS_API] = [llm_hass_api]
+                    elif isinstance(llm_hass_api, list):
+                        # Remove "none" from list if present
+                        if "none" in llm_hass_api:
+                            llm_hass_api.remove("none")
+                        # If list is empty after removing "none", omit the key
+                        if not llm_hass_api:
+                            user_input.pop(CONF_LLM_HASS_API)
+                        else:
+                            # Validate that all LLM APIs exist
+                            for api_id in llm_hass_api:
+                                try:
+                                    llm.async_get_api(self.hass, api_id)
+                                except Exception:
+                                    errors[CONF_LLM_HASS_API] = "llm_api_not_found"
+                                    break
+                else:
+                    # No API selected, omit the key
+                    user_input.pop(CONF_LLM_HASS_API, None)
 
                 if user_input.get(CONF_CHAT_MODEL) in UNSUPPORTED_MODELS:
                     errors[CONF_CHAT_MODEL] = "model_not_supported"
@@ -211,8 +230,7 @@ def openai_config_option_schema(
         vol.Optional(
             CONF_LLM_HASS_API,
             description={"suggested_value": options.get(CONF_LLM_HASS_API)},
-            default="none",
-        ): SelectSelector(SelectSelectorConfig(options=hass_apis)),
+        ): SelectSelector(SelectSelectorConfig(options=hass_apis, multiple=True)),
         vol.Required(
             CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
         ): bool,

@@ -15,7 +15,6 @@ CONF_RECOMMENDED = "recommended"
 CONF_TEMPERATURE = "temperature"
 CONF_TOP_P = "top_p"
 EVENT_AUTOMATION_REGISTERED = "automation_registered"
-OPENAI_BASE_URL = "https://api.x.ai/v1"
 SERVICE_QUERY_IMAGE = "query_image"
 # Recommended chat model - grok-4-fast provides fast responses with grok-4 capabilities
 # Other available models: grok-2-beta (faster but less capable), grok-4 (slower but most capable)
@@ -30,3 +29,8 @@ RECOMMENDED_TOP_P = 1.0
 
 # Grok models that are not supported or deprecated
 UNSUPPORTED_MODELS: list[str] = []
+
+# Image generation constants
+IMAGE_SIZES = ("1024x1024", "1024x1792", "1792x1024")
+IMAGE_QUALITIES = ("standard", "hd")
+IMAGE_STYLES = ("vivid", "natural")
