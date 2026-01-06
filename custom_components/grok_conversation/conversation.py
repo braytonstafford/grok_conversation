@@ -285,6 +285,25 @@ class OpenAIConversationEntity(
         chat_log: conversation.ChatLog,
     ) -> conversation.ConversationResult:
         """Call the API with function calling support."""
+        try:
+            return await self._async_handle_message_inner(user_input, chat_log)
+        except Exception as err:
+            LOGGER.error("Unexpected error in conversation handler: %s", err, exc_info=True)
+            # Return a proper error response instead of letting the exception bubble up
+            intent_response = intent.IntentResponse(language=user_input.language)
+            intent_response.async_set_speech("Sorry, I encountered an unexpected error. Please try again.")
+            return conversation.ConversationResult(
+                response=intent_response,
+                conversation_id=chat_log.conversation_id if chat_log else "",
+                continue_conversation=False,
+            )
+
+    async def _async_handle_message_inner(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+    ) -> conversation.ConversationResult:
+        """Inner method that handles the actual conversation logic."""
         options = self.entry.options
 
         # Debug logging for device/satellite requests
