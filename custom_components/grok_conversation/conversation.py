@@ -449,11 +449,18 @@ class OpenAIConversationEntity(
 
                 # Handle tool calls if present
                 if hasattr(message, 'tool_calls') and message.tool_calls:
+                    # Add external attribute to OpenAI tool calls for Home Assistant compatibility
+                    ha_tool_calls = []
+                    for tc in message.tool_calls:
+                        # Create a copy with external attribute
+                        tc.external = True  # External tool calls (not internal HA functions)
+                        ha_tool_calls.append(tc)
+
                     # Add assistant message with tool calls
                     assistant_content = conversation.AssistantContent(
                         agent_id=user_input.agent_id,
                         content=message.content or "",
-                        tool_calls=message.tool_calls
+                        tool_calls=ha_tool_calls
                     )
 
                     # Store the OpenAI tool call objects directly
