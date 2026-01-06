@@ -97,15 +97,16 @@ async def async_setup_entry(
 
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
-) -> FunctionToolParam:
-    """Format tool specification."""
-    return FunctionToolParam(
-        type="function",
-        name=tool.name,
-        parameters=convert(tool.parameters, custom_serializer=custom_serializer),
-        description=tool.description,
-        strict=False,
-    )
+) -> dict[str, Any]:
+    """Format tool specification for OpenAI API."""
+    return {
+        "type": "function",
+        "function": {
+            "name": tool.name,
+            "description": tool.description or "",
+            "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
+        }
+    }
 
 
 def _convert_content_to_param(
@@ -414,7 +415,7 @@ class OpenAIConversationEntity(
                 tools = [
                     _format_tool(tool, None) for tool in chat_log.llm_api.tools
                 ]
-                LOGGER.debug("Prepared %d tools for API call", len(tools))
+                LOGGER.debug("Prepared %d tools for API call: %s", len(tools), tools)
 
             model_args = {
                 "model": model,
