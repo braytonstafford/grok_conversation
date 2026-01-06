@@ -129,14 +129,27 @@ def _convert_content_to_param(
     if isinstance(content, conversation.AssistantContent) and content.tool_calls:
         tool_calls_list = []
         for tool_call in content.tool_calls:
-            tool_calls_list.append({
-                "id": tool_call.id,
-                "type": "function",
-                "function": {
-                    "name": tool_call.tool_name,
-                    "arguments": json.dumps(tool_call.tool_args),
-                }
-            })
+            # Handle both OpenAI tool call objects and custom tool call dicts
+            if hasattr(tool_call, 'function'):
+                # OpenAI tool call object
+                tool_calls_list.append({
+                    "id": tool_call.id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.function.name,
+                        "arguments": tool_call.function.arguments,
+                    }
+                })
+            else:
+                # Custom tool call dict
+                tool_calls_list.append({
+                    "id": tool_call["id"],
+                    "type": "function",
+                    "function": {
+                        "name": tool_call["tool_name"],
+                        "arguments": json.dumps(tool_call["tool_args"]),
+                    }
+                })
 
         messages.append({
             "role": "assistant",
@@ -421,15 +434,8 @@ class OpenAIConversationEntity(
                         content=message.content or ""
                     )
 
-                    tool_calls = []
-                    for tool_call in message.tool_calls:
-                        tool_calls.append(
-                            conversation.ToolCall(
-                                id=tool_call.id,
-                                tool_name=tool_call.function.name,
-                                tool_args=json.loads(tool_call.function.arguments)
-                            )
-                        )
+                    # Store the OpenAI tool call objects directly
+                    tool_calls = message.tool_calls
 
                     assistant_content.tool_calls = tool_calls
                     async for _ in chat_log.async_add_assistant_content(assistant_content):
