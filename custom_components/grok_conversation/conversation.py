@@ -116,14 +116,33 @@ def _convert_content_to_param(
 
     # Handle ToolResultContent first (it doesn't have a content attribute)
     if isinstance(content, conversation.ToolResultContent):
-        messages.append(
-            EasyInputMessageParam(
-                type="message",
-                role="tool",
-                content=json.dumps(content.tool_result),
-                tool_call_id=content.tool_call_id,
-            )
-        )
+        # Create a regular message dict for tool results
+        tool_message = {
+            "role": "tool",
+            "content": json.dumps(content.tool_result),
+            "tool_call_id": content.tool_call_id,
+        }
+        messages.append(tool_message)
+        return messages
+
+    # Handle AssistantContent with tool calls (must come before regular content handling)
+    if isinstance(content, conversation.AssistantContent) and content.tool_calls:
+        tool_calls_list = []
+        for tool_call in content.tool_calls:
+            tool_calls_list.append({
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.tool_name,
+                    "arguments": json.dumps(tool_call.tool_args),
+                }
+            })
+
+        messages.append({
+            "role": "assistant",
+            "content": content.content or "",
+            "tool_calls": tool_calls_list
+        })
         return messages
 
     # Handle regular content with role and content attributes
@@ -131,21 +150,27 @@ def _convert_content_to_param(
         role: Literal["user", "assistant", "system", "developer"] = content.role
         if role == "developer":
             role = "system"
-        messages.append(
-            EasyInputMessageParam(type="message", role=role, content=content.content)
-        )
+        messages.append({
+            "role": role,
+            "content": content.content,
+        })
+        tool_calls_list = []
+        for tool_call in content.tool_calls:
+            tool_calls_list.append({
+                "id": tool_call.id,
+                "type": "function",
+                "function": {
+                    "name": tool_call.tool_name,
+                    "arguments": json.dumps(tool_call.tool_args),
+                }
+            })
 
-    # Handle tool calls in assistant content
-    if isinstance(content, conversation.AssistantContent) and content.tool_calls:
-        messages.extend(
-            ResponseFunctionToolCallParam(
-                type="function_call",
-                name=tool_call.tool_name,
-                arguments=json.dumps(tool_call.tool_args),
-                call_id=tool_call.id,
-            )
-            for tool_call in content.tool_calls
-        )
+        messages.append({
+            "role": "assistant",
+            "content": content.content or "",
+            "tool_calls": tool_calls_list
+        })
+        return messages
 
     return messages
 
