@@ -154,23 +154,6 @@ def _convert_content_to_param(
             "role": role,
             "content": content.content,
         })
-        tool_calls_list = []
-        for tool_call in content.tool_calls:
-            tool_calls_list.append({
-                "id": tool_call.id,
-                "type": "function",
-                "function": {
-                    "name": tool_call.tool_name,
-                    "arguments": json.dumps(tool_call.tool_args),
-                }
-            })
-
-        messages.append({
-            "role": "assistant",
-            "content": content.content or "",
-            "tool_calls": tool_calls_list
-        })
-        return messages
 
     return messages
 
