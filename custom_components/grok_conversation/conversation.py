@@ -129,9 +129,9 @@ def _convert_content_to_param(
     if isinstance(content, conversation.AssistantContent) and content.tool_calls:
         tool_calls_list = []
         for tool_call in content.tool_calls:
-            # Handle both OpenAI tool call objects and custom tool call dicts
+            # Handle different tool call formats
             if hasattr(tool_call, 'function'):
-                # OpenAI tool call object
+                # OpenAI tool call object (has .function attribute)
                 tool_calls_list.append({
                     "id": tool_call.id,
                     "type": "function",
@@ -140,14 +140,34 @@ def _convert_content_to_param(
                         "arguments": tool_call.function.arguments,
                     }
                 })
-            else:
-                # Custom tool call dict
+            elif hasattr(tool_call, 'tool_name'):
+                # ToolInput object (has .tool_name attribute)
                 tool_calls_list.append({
-                    "id": tool_call["id"],
+                    "id": tool_call.id if hasattr(tool_call, 'id') else str(hash(tool_call)),
                     "type": "function",
                     "function": {
-                        "name": tool_call["tool_name"],
-                        "arguments": json.dumps(tool_call["tool_args"]),
+                        "name": tool_call.tool_name,
+                        "arguments": json.dumps(tool_call.tool_args) if hasattr(tool_call, 'tool_args') else "{}",
+                    }
+                })
+            elif isinstance(tool_call, dict):
+                # Dictionary format
+                tool_calls_list.append({
+                    "id": tool_call.get("id", ""),
+                    "type": "function",
+                    "function": {
+                        "name": tool_call.get("tool_name", tool_call.get("name", "")),
+                        "arguments": json.dumps(tool_call.get("tool_args", tool_call.get("arguments", {}))),
+                    }
+                })
+            else:
+                # Fallback: try to access as object attributes
+                tool_calls_list.append({
+                    "id": getattr(tool_call, 'id', ''),
+                    "type": "function",
+                    "function": {
+                        "name": getattr(tool_call, 'tool_name', getattr(tool_call, 'name', '')),
+                        "arguments": json.dumps(getattr(tool_call, 'tool_args', getattr(tool_call, 'arguments', {}))),
                     }
                 })
 

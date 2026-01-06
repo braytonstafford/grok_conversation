@@ -152,28 +152,48 @@ class OpenAIOptionsFlow(OptionsFlow):
                 # Handle LLM HASS API selection (can be list or single value)
                 llm_hass_api = user_input.get(CONF_LLM_HASS_API)
                 if llm_hass_api:
-                    # Convert single value to list if needed, or handle list
+                    # Get available API IDs for validation (same as used in schema)
+                    try:
+                        available_apis = llm.async_get_apis(self.hass)
+                        available_api_ids = {api.id for api in available_apis}
+                        _LOGGER.debug(
+                            "Available LLM APIs: %s",
+                            {api.id: api.name for api in available_apis}
+                        )
+                    except Exception as err:
+                        _LOGGER.error("Error getting available LLM APIs: %s", err, exc_info=True)
+                        available_api_ids = set()
+                    
+                    # Normalize to list for easier processing
                     if isinstance(llm_hass_api, str):
-                        if llm_hass_api == "none":
-                            user_input.pop(CONF_LLM_HASS_API)
-                        else:
-                            # Convert to list for consistency
-                            user_input[CONF_LLM_HASS_API] = [llm_hass_api]
+                        api_list = [llm_hass_api]
                     elif isinstance(llm_hass_api, list):
-                        # Remove "none" from list if present
-                        if "none" in llm_hass_api:
-                            llm_hass_api.remove("none")
-                        # If list is empty after removing "none", omit the key
-                        if not llm_hass_api:
-                            user_input.pop(CONF_LLM_HASS_API)
+                        api_list = list(llm_hass_api)
+                    else:
+                        api_list = []
+                    
+                    # Remove "none" from list if present
+                    if "none" in api_list:
+                        api_list.remove("none")
+                    
+                    # If list is empty after removing "none", omit the key
+                    if not api_list:
+                        user_input.pop(CONF_LLM_HASS_API, None)
+                    else:
+                        # Validate that all LLM APIs exist
+                        invalid_apis = [api_id for api_id in api_list if api_id not in available_api_ids]
+                        if invalid_apis:
+                            errors[CONF_LLM_HASS_API] = "llm_api_not_found"
+                            _LOGGER.warning(
+                                "LLM API(s) not found: %s. Available APIs: %s. User input: %s",
+                                invalid_apis,
+                                available_api_ids,
+                                llm_hass_api
+                            )
                         else:
-                            # Validate that all LLM APIs exist
-                            for api_id in llm_hass_api:
-                                try:
-                                    llm.async_get_api(self.hass, api_id)
-                                except Exception:
-                                    errors[CONF_LLM_HASS_API] = "llm_api_not_found"
-                                    break
+                            # Store as list for consistency
+                            user_input[CONF_LLM_HASS_API] = api_list
+                            _LOGGER.debug("Validated LLM HASS API selection: %s", api_list)
                 else:
                     # No API selected, omit the key
                     user_input.pop(CONF_LLM_HASS_API, None)
