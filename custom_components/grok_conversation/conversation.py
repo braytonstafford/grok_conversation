@@ -395,34 +395,34 @@ class OpenAIConversationEntity(
                                     "Cannot execute tool %s: LLM HASS API not configured",
                                     tool_name
                                 )
+                            else:
+                                try:
+                                    # Find the tool in the LLM API instance
+                                    tool = None
+                                    for t in chat_log.llm_api.tools:
+                                        if t.name == tool_name:
+                                            tool = t
+                                            break
+
+                                    if tool is None:
+                                        tool_result = {"error": f"Tool {tool_name} not found"}
+                                        LOGGER.error("Tool %s not found in LLM API", tool_name)
                                     else:
-                                        try:
-                                            # Find the tool in the LLM API instance
-                                            tool = None
-                                            for t in chat_log.llm_api.tools:
-                                                if t.name == tool_name:
-                                                    tool = t
-                                                    break
-                                            
-                                            if tool is None:
-                                                tool_result = {"error": f"Tool {tool_name} not found"}
-                                                LOGGER.error("Tool %s not found in LLM API", tool_name)
-                                            else:
-                                                # Create ToolInput for the tool
-                                                tool_input = ToolInput(
-                                                    tool_name=tool_name,
-                                                    tool_args=tool_args,
-                                                    platform=DOMAIN,
-                                                    context=user_input.context,
-                                                    user_prompt=user_input.text,
-                                                    language=user_input.language,
-                                                    assistant="conversation",
-                                                    device_id=user_input.device_id,
-                                                )
-                                                tool_result = await tool.async_call(
-                                                    self.hass, tool_input, user_input.as_llm_context(DOMAIN)
-                                                )
-                                                LOGGER.debug("Tool %s executed successfully: %s", tool_name, tool_result)
+                                        # Create ToolInput for the tool
+                                        tool_input = ToolInput(
+                                            tool_name=tool_name,
+                                            tool_args=tool_args,
+                                            platform=DOMAIN,
+                                            context=user_input.context,
+                                            user_prompt=user_input.text,
+                                            language=user_input.language,
+                                            assistant="conversation",
+                                            device_id=user_input.device_id,
+                                        )
+                                        tool_result = await tool.async_call(
+                                            self.hass, tool_input, user_input.as_llm_context(DOMAIN)
+                                        )
+                                        LOGGER.debug("Tool %s executed successfully: %s", tool_name, tool_result)
                                 except Exception as err:
                                     LOGGER.error(
                                         "Error executing tool %s: %s", tool_name, err, exc_info=True
