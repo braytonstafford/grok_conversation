@@ -114,7 +114,20 @@ def _convert_content_to_param(
     """Convert any native chat message for this agent to the native format."""
     messages: ResponseInputParam = []
 
-    if content.content:
+    # Handle ToolResultContent first (it doesn't have a content attribute)
+    if isinstance(content, conversation.ToolResultContent):
+        messages.append(
+            EasyInputMessageParam(
+                type="message",
+                role="tool",
+                content=json.dumps(content.tool_result),
+                tool_call_id=content.tool_call_id,
+            )
+        )
+        return messages
+
+    # Handle regular content with role and content attributes
+    if hasattr(content, 'content') and content.content:
         role: Literal["user", "assistant", "system", "developer"] = content.role
         if role == "developer":
             role = "system"
@@ -122,6 +135,7 @@ def _convert_content_to_param(
             EasyInputMessageParam(type="message", role=role, content=content.content)
         )
 
+    # Handle tool calls in assistant content
     if isinstance(content, conversation.AssistantContent) and content.tool_calls:
         messages.extend(
             ResponseFunctionToolCallParam(
@@ -131,16 +145,6 @@ def _convert_content_to_param(
                 call_id=tool_call.id,
             )
             for tool_call in content.tool_calls
-        )
-
-    if isinstance(content, conversation.ToolResultContent):
-        messages.append(
-            EasyInputMessageParam(
-                type="message",
-                role="tool",
-                content=json.dumps(content.tool_result),
-                tool_call_id=content.tool_call_id,
-            )
         )
 
     return messages
@@ -265,10 +269,7 @@ class OpenAIConversationEntity(
                 self._attr_supported_features = conversation.ConversationEntityFeature(0)
         else:
             self._attr_supported_features = conversation.ConversationEntityFeature(0)
-        
-        assist_pipeline.async_migrate_engine(
-            self.hass, "conversation", self.entry.entry_id, self.entity_id
-        )
+
         conversation.async_set_agent(self.hass, self.entry, self)
         self.entry.async_on_unload(
             self.entry.add_update_listener(self._async_entry_update_listener)
@@ -289,6 +290,8 @@ class OpenAIConversationEntity(
             return await self._async_handle_message_inner(user_input, chat_log)
         except Exception as err:
             LOGGER.error("Unexpected error in conversation handler: %s", err, exc_info=True)
+            import traceback
+            LOGGER.error("Full traceback: %s", traceback.format_exc())
             # Return a proper error response instead of letting the exception bubble up
             intent_response = intent.IntentResponse(language=user_input.language)
             intent_response.async_set_speech("Sorry, I encountered an unexpected error. Please try again.")
