@@ -8,13 +8,8 @@ from pathlib import Path
 
 import openai
 from openai.types.images_response import ImagesResponse
-from openai.types.responses import (
-    EasyInputMessageParam,
-    Response,
-    ResponseInputImageParam,
-    ResponseInputMessageContentListParam,
-    ResponseInputParam,
-    ResponseInputTextParam,
+from openai.types.chat import (
+    ChatCompletionMessageParam,
 )
 import voluptuous as vol
 
@@ -125,8 +120,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         entry = _validate_config_entry(hass, call.data["config_entry"])
         client: openai.AsyncClient = entry.runtime_data
 
-        content: ResponseInputMessageContentListParam = [
-            ResponseInputTextParam(type="input_text", text=call.data[CONF_PROMPT])
+        content: list[dict[str, Any]] = [
+            {"type": "text", "text": call.data[CONF_PROMPT]}
         ]
 
         has_images = False
@@ -149,12 +144,13 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                     )
                 has_images = True
                 content.append(
-                    ResponseInputImageParam(
-                        type="input_image",
-                        file_id=filename,
-                        image_url=f"data:{mime_type};base64,{base64_file}",
-                        detail="auto",
-                    )
+                    {
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:{mime_type};base64,{base64_file}",
+                            "detail": "auto",
+                        }
+                    }
                 )
 
         if CONF_FILENAMES in call.data:
@@ -166,8 +162,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         else:
             model: str = entry.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
 
-        messages: ResponseInputParam = [
-            EasyInputMessageParam(type="message", role="user", content=content)
+        messages: list[ChatCompletionMessageParam] = [
+            {"role": "user", "content": content}
         ]
 
         try:
@@ -190,14 +186,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             if reasoning_effort and reasoning_effort != "none" and "reasoning" in model.lower():
                 model_args["reasoning_effort"] = reasoning_effort
 
-            response: Response = await client.chat.completions.create(**model_args)
+            response = await client.chat.completions.create(**model_args)
 
         except openai.OpenAIError as err:
             raise HomeAssistantError(f"Error generating content: {err}") from err
         except FileNotFoundError as err:
             raise HomeAssistantError(f"Error generating content: {err}") from err
 
-        return {"text": response.output_text}
+        return {"text": response.choices[0].message.content}
 
     hass.services.async_register(
         DOMAIN,

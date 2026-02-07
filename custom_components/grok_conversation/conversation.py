@@ -6,12 +6,10 @@ import re
 from typing import Any, Literal
 
 import openai
-from openai.types.responses import (
-    EasyInputMessageParam,
-    FunctionToolParam,
-    ResponseFunctionToolCallParam,
-    ResponseInputParam,
-    ToolParam,
+from openai.types.chat import (
+    ChatCompletionMessageParam,
+    ChatCompletionMessageToolCall,
+    ChatCompletionToolMessageParam,
 )
 from openai.types.chat import ChatCompletionChunk
 from voluptuous_openapi import convert
@@ -111,9 +109,9 @@ def _format_tool(
 
 def _convert_content_to_param(
     content: conversation.Content,
-) -> ResponseInputParam:
+) -> list[ChatCompletionMessageParam]:
     """Convert any native chat message for this agent to the native format."""
-    messages: ResponseInputParam = []
+    messages: list[ChatCompletionMessageParam] = []
 
     # Handle ToolResultContent first (it doesn't have a content attribute)
     if isinstance(content, conversation.ToolResultContent):
