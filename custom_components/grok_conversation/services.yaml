@@ -1,6 +1,6 @@
 generate_image:
-  name: "generate image"
-  description: "Turn a prompt into an image"
+  name: "Generate image"
+  description: "Turn a prompt into an image with Grok Imagine"
   fields:
     config_entry:
       name: "Config Entry"
@@ -16,6 +16,12 @@ generate_image:
       selector:
         text:
           multiline: true
+    model:
+      name: "Model"
+      description: "Image model override (default grok-imagine-image)"
+      required: false
+      selector:
+        text:
     size:
       name: "Size"
       description: "The size of the image to generate"
@@ -50,9 +56,10 @@ generate_image:
           options:
             - "vivid"
             - "natural"
+
 generate_content:
-  name: "generate content"
-  description: "Turn a prompt into content saved to a file"
+  name: "Generate content"
+  description: "Turn a prompt into content (optionally with images and live search)"
   fields:
     config_entry:
       name: "Config Entry"
@@ -63,7 +70,7 @@ generate_content:
           integration: grok_conversation
     prompt:
       name: "Prompt"
-      description: "The text to turn into an image"
+      description: "The text prompt"
       required: true
       selector:
         text:
@@ -71,10 +78,332 @@ generate_content:
       example: "Hello, how can I help you?"
     filenames:
       name: "Filenames"
-      description: "The name of the files generated"
+      description: "Local image file paths to attach"
       selector:
         text:
           multiline: true
       example: |
-        - /path/to/file1.txt
-        - /path/to/file2.txt
+        - /config/www/snapshot.jpg
+    model:
+      name: "Model"
+      required: false
+      selector:
+        text:
+    max_tokens:
+      name: "Max tokens"
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 100000
+    temperature:
+      name: "Temperature"
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+    top_p:
+      name: "Top P"
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+    live_search:
+      name: "Live Search"
+      required: false
+      default: "off"
+      selector:
+        select:
+          options:
+            - label: "Off"
+              value: "off"
+            - label: "Web Search"
+              value: "web"
+            - label: "X Search"
+              value: "x"
+            - label: "Full (Web + X)"
+              value: "full"
+    show_citations:
+      name: "Show citations"
+      required: false
+      default: true
+      selector:
+        boolean:
+
+ask:
+  name: "Ask (stateless)"
+  description: >
+    One-shot stateless query with optional model/temperature/live-search overrides.
+    Ideal for automations that process sensor data or need a specific Grok model.
+  fields:
+    config_entry:
+      name: "Config Entry"
+      required: true
+      selector:
+        config_entry:
+          integration: grok_conversation
+    instructions:
+      name: "Instructions"
+      description: "System prompt / what the model should do"
+      required: true
+      selector:
+        text:
+          multiline: true
+      example: "Summarize this weather data into a short spoken report."
+    input_data:
+      name: "Input data"
+      description: "Content or data to process (supports templates in automations)"
+      required: true
+      selector:
+        text:
+          multiline: true
+      example: "{{ states('weather.home') }}"
+    model:
+      name: "Model"
+      required: false
+      selector:
+        text:
+    max_tokens:
+      name: "Max tokens"
+      required: false
+      selector:
+        number:
+          min: 1
+          max: 100000
+    temperature:
+      name: "Temperature"
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+    top_p:
+      name: "Top P"
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+    reasoning_effort:
+      name: "Reasoning effort"
+      required: false
+      selector:
+        select:
+          options:
+            - "low"
+            - "medium"
+            - "high"
+    live_search:
+      name: "Live Search"
+      required: false
+      default: "off"
+      selector:
+        select:
+          options:
+            - label: "Off"
+              value: "off"
+            - label: "Web Search"
+              value: "web"
+            - label: "X Search"
+              value: "x"
+            - label: "Full (Web + X)"
+              value: "full"
+    show_citations:
+      name: "Show citations"
+      required: false
+      default: true
+      selector:
+        boolean:
+    location_context:
+      name: "Location context"
+      required: false
+      selector:
+        text:
+
+photo_analysis:
+  name: "Photo analysis"
+  description: "Analyze one or more photos with Grok Vision (paths or URLs)"
+  fields:
+    config_entry:
+      name: "Config Entry"
+      required: true
+      selector:
+        config_entry:
+          integration: grok_conversation
+    prompt:
+      name: "Prompt"
+      required: true
+      example: "Describe what you see"
+      selector:
+        text:
+          multiline: true
+    images:
+      name: "Images"
+      description: "List of local paths or http(s) URLs (one per line or YAML list)"
+      required: true
+      example: |
+        - /config/www/camera_snapshot.jpg
+      selector:
+        text:
+          multiline: true
+    model:
+      name: "Vision model"
+      required: false
+      selector:
+        text:
+    max_tokens:
+      name: "Max tokens"
+      required: false
+      default: 800
+      selector:
+        number:
+          min: 1
+          max: 8000
+    temperature:
+      name: "Temperature"
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 2
+          step: 0.1
+    top_p:
+      name: "Top P"
+      required: false
+      selector:
+        number:
+          min: 0
+          max: 1
+          step: 0.05
+
+query_image:
+  name: "Query image"
+  description: "Legacy alias for photo analysis"
+  fields:
+    config_entry:
+      name: "Config Entry"
+      required: true
+      selector:
+        config_entry:
+          integration: grok_conversation
+    model:
+      name: "Model"
+      required: false
+      selector:
+        text:
+    prompt:
+      name: "Prompt"
+      required: true
+      selector:
+        text:
+          multiline: true
+    images:
+      name: "Images"
+      required: true
+      selector:
+        object:
+    max_tokens:
+      name: "Max tokens"
+      required: false
+      default: 300
+      selector:
+        number:
+          min: 1
+          max: 8000
+
+clear_memory:
+  name: "Clear memory"
+  description: "Reload the integration to reset in-memory conversation agent state"
+  fields:
+    config_entry:
+      name: "Config Entry"
+      required: true
+      selector:
+        config_entry:
+          integration: grok_conversation
+
+reset_stats:
+  name: "Reset usage stats"
+  description: "Reset token/cost sensors for this config entry"
+  fields:
+    config_entry:
+      name: "Config Entry"
+      required: true
+      selector:
+        config_entry:
+          integration: grok_conversation
+
+home_briefing:
+  name: "Home briefing"
+  description: >
+    Competitive advantage: snapshot current Home Assistant entity state and ask Grok
+    for a concise spoken status briefing (security, climate, presence, anomalies).
+  fields:
+    config_entry:
+      name: "Config Entry"
+      required: true
+      selector:
+        config_entry:
+          integration: grok_conversation
+    focus:
+      name: "Focus"
+      description: "Optional focus instruction"
+      required: false
+      example: "Focus on security and whether anyone is home."
+      selector:
+        text:
+          multiline: true
+    domains:
+      name: "Domains"
+      description: "Entity domains to include"
+      required: false
+      selector:
+        text:
+          multiline: true
+    max_entities:
+      name: "Max entities"
+      required: false
+      default: 80
+      selector:
+        number:
+          min: 5
+          max: 300
+    include_unavailable:
+      name: "Include unavailable"
+      required: false
+      default: false
+      selector:
+        boolean:
+    model:
+      name: "Model"
+      required: false
+      selector:
+        text:
+    max_tokens:
+      name: "Max tokens"
+      required: false
+      selector:
+        number:
+          min: 50
+          max: 4000
+    live_search:
+      name: "Live Search"
+      required: false
+      default: "off"
+      selector:
+        select:
+          options:
+            - label: "Off"
+              value: "off"
+            - label: "Web Search"
+              value: "web"
+            - label: "X Search"
+              value: "x"
+            - label: "Full (Web + X)"
+              value: "full"

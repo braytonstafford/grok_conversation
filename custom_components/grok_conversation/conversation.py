@@ -1,62 +1,79 @@
 """Conversation support for xAI Grok."""
 
+from __future__ import annotations
+
 from collections.abc import AsyncGenerator, Callable
 import json
-import re
-from typing import Any, Literal
+from typing import Any, AsyncIterator, Literal
 
 import openai
 from openai.types.chat import (
+    ChatCompletionChunk,
     ChatCompletionMessageParam,
-    ChatCompletionMessageToolCall,
-    ChatCompletionToolMessageParam,
 )
-from openai.types.chat import ChatCompletionChunk
 from voluptuous_openapi import convert
-from typing import AsyncIterator
 
-from homeassistant.components import assist_pipeline, conversation
+from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_LLM_HASS_API, MATCH_ALL
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, intent, llm
-from homeassistant.helpers.llm import ToolInput
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
+from homeassistant.helpers.llm import ToolInput
+from homeassistant.util import dt as dt_util
 
 from . import OpenAIConfigEntry
+from .api_helpers import (
+    async_chat_completion,
+    async_responses_completion,
+    extract_usage,
+    looks_like_search_query,
+    looks_like_simple_query,
+)
 from .const import (
+    CONF_AUTO_MODEL_ROUTING,
+    CONF_BUDGET_WARN_USD,
     CONF_CHAT_MODEL,
+    CONF_FALLBACK_MODEL,
+    CONF_FAST_MODEL,
+    CONF_HOME_CONTEXT,
+    CONF_INTERACTION_MODE,
+    CONF_LIVE_SEARCH,
+    CONF_LOCATION_CONTEXT,
     CONF_MAX_TOKENS,
     CONF_PROMPT,
     CONF_REASONING_EFFORT,
+    CONF_SEND_USER_NAME,
+    CONF_SHOW_CITATIONS,
     CONF_TEMPERATURE,
     CONF_TOP_P,
+    CONF_VOICE_OPTIMIZED,
     DOMAIN,
+    LIVE_SEARCH_OFF,
     LOGGER,
+    MODE_CHAT_ONLY,
+    MODE_PIPELINE,
+    MODE_TOOLS,
+    RECOMMENDED_AUTO_MODEL_ROUTING,
     RECOMMENDED_CHAT_MODEL,
+    RECOMMENDED_FALLBACK_MODEL,
+    RECOMMENDED_FAST_MODEL,
+    RECOMMENDED_HOME_CONTEXT,
+    RECOMMENDED_INTERACTION_MODE,
+    RECOMMENDED_LIVE_SEARCH,
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_REASONING_EFFORT,
+    RECOMMENDED_SEND_USER_NAME,
+    RECOMMENDED_SHOW_CITATIONS,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
+    RECOMMENDED_VOICE_OPTIMIZED,
+    VOICE_OPTIMIZED_SUFFIX,
 )
-from .exceptions import (
-    CallServiceError,
-    EntityNotExposed,
-    EntityNotFound,
-    FunctionNotFound,
-    InvalidFunction,
-    NativeNotFound,
-    ParseArgumentsFailed,
-    TokenLengthExceededError,
-)
-from .helpers import (
-    convert_to_template,
-    get_function_executor,
-    validate_authentication,
-)
+from .exceptions import TokenLengthExceededError
+from .usage import UsageTracker
 
-# Max number of back and forth with the LLM to generate a response
 MAX_TOOL_ITERATIONS = 10
 
 
@@ -64,22 +81,14 @@ def _strip_json_from_response(response: str) -> str:
     """Strip JSON objects from the end of LLM responses."""
     if not response:
         return response
-
-    # Look for JSON objects at the end of the response
-    # Find the last opening brace and check if everything after it is valid JSON
-    last_brace_index = response.rfind('{')
+    last_brace_index = response.rfind("{")
     if last_brace_index == -1:
         return response
-
-    # Extract potential JSON from the last brace to the end
     potential_json = response[last_brace_index:]
     try:
-        # Try to parse it as JSON
         json.loads(potential_json)
-        # If successful, remove the JSON part
         return response[:last_brace_index].strip()
     except json.JSONDecodeError:
-        # Not valid JSON, check for nested braces
         return response
 
 
@@ -103,7 +112,7 @@ def _format_tool(
             "name": tool.name,
             "description": tool.description or "",
             "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
-        }
+        },
     }
 
 
@@ -113,80 +122,97 @@ def _convert_content_to_param(
     """Convert any native chat message for this agent to the native format."""
     messages: list[ChatCompletionMessageParam] = []
 
-    # Handle ToolResultContent first (it doesn't have a content attribute)
     if isinstance(content, conversation.ToolResultContent):
-        # Create a regular message dict for tool results
         tool_message = {
             "role": "tool",
             "content": json.dumps(content.tool_result),
             "tool_call_id": content.tool_call_id,
         }
-        messages.append(tool_message)
+        messages.append(tool_message)  # type: ignore[arg-type]
         return messages
 
-    # Handle AssistantContent with tool calls (must come before regular content handling)
     if isinstance(content, conversation.AssistantContent) and content.tool_calls:
         tool_calls_list = []
         for tool_call in content.tool_calls:
-            # Handle different tool call formats
-            if hasattr(tool_call, 'function'):
-                # OpenAI tool call object (has .function attribute)
-                tool_calls_list.append({
-                    "id": tool_call.id,
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.function.name,
-                        "arguments": tool_call.function.arguments,
+            if hasattr(tool_call, "function"):
+                tool_calls_list.append(
+                    {
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments,
+                        },
                     }
-                })
-            elif hasattr(tool_call, 'tool_name'):
-                # ToolInput object (has .tool_name attribute)
-                tool_calls_list.append({
-                    "id": tool_call.id if hasattr(tool_call, 'id') else str(hash(tool_call)),
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.tool_name,
-                        "arguments": json.dumps(tool_call.tool_args) if hasattr(tool_call, 'tool_args') else "{}",
+                )
+            elif hasattr(tool_call, "tool_name"):
+                tool_calls_list.append(
+                    {
+                        "id": tool_call.id
+                        if hasattr(tool_call, "id")
+                        else str(hash(tool_call)),
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.tool_name,
+                            "arguments": json.dumps(tool_call.tool_args)
+                            if hasattr(tool_call, "tool_args")
+                            else "{}",
+                        },
                     }
-                })
+                )
             elif isinstance(tool_call, dict):
-                # Dictionary format
-                tool_calls_list.append({
-                    "id": tool_call.get("id", ""),
-                    "type": "function",
-                    "function": {
-                        "name": tool_call.get("tool_name", tool_call.get("name", "")),
-                        "arguments": json.dumps(tool_call.get("tool_args", tool_call.get("arguments", {}))),
+                tool_calls_list.append(
+                    {
+                        "id": tool_call.get("id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.get(
+                                "tool_name", tool_call.get("name", "")
+                            ),
+                            "arguments": json.dumps(
+                                tool_call.get(
+                                    "tool_args", tool_call.get("arguments", {})
+                                )
+                            ),
+                        },
                     }
-                })
+                )
             else:
-                # Fallback: try to access as object attributes
-                tool_calls_list.append({
-                    "id": getattr(tool_call, 'id', ''),
-                    "type": "function",
-                    "function": {
-                        "name": getattr(tool_call, 'tool_name', getattr(tool_call, 'name', '')),
-                        "arguments": json.dumps(getattr(tool_call, 'tool_args', getattr(tool_call, 'arguments', {}))),
+                tool_calls_list.append(
+                    {
+                        "id": getattr(tool_call, "id", ""),
+                        "type": "function",
+                        "function": {
+                            "name": getattr(
+                                tool_call,
+                                "tool_name",
+                                getattr(tool_call, "name", ""),
+                            ),
+                            "arguments": json.dumps(
+                                getattr(
+                                    tool_call,
+                                    "tool_args",
+                                    getattr(tool_call, "arguments", {}),
+                                )
+                            ),
+                        },
                     }
-                })
+                )
 
-        messages.append({
-            "role": "assistant",
-            "content": content.content or "",
-            "tool_calls": tool_calls_list
-        })
+        messages.append(
+            {
+                "role": "assistant",
+                "content": content.content or "",
+                "tool_calls": tool_calls_list,
+            }
+        )  # type: ignore[arg-type]
         return messages
 
-    # Handle regular content with role and content attributes
-    if hasattr(content, 'content') and content.content:
+    if hasattr(content, "content") and content.content:
         role: Literal["user", "assistant", "system", "developer"] = content.role
         if role == "developer":
             role = "system"
-        messages.append({
-            "role": role,
-            "content": content.content,
-        })
-
+        messages.append({"role": role, "content": content.content})
     return messages
 
 
@@ -194,66 +220,53 @@ async def _transform_stream(
     chat_log: conversation.ChatLog,
     result: AsyncIterator[ChatCompletionChunk],
 ) -> AsyncGenerator[dict, None]:
-    """
-    Transform an xAI chat completions delta stream into Home Assistant format.
-    Yields dictionaries with role, content, or tool calls for incremental updates.
-    """
+    """Transform an xAI chat completions delta stream into Home Assistant format."""
     current_tool_call = None
     tool_call_counter = 0
     async for chunk in result:
-        LOGGER.debug("Processing chunk: %s", chunk)
         for choice in chunk.choices:
-            if choice.delta:
-                # Handle role
-                if choice.delta.role:
-                    yield {"role": choice.delta.role}
-                # Handle content
-                if choice.delta.content:
-                    yield {"content": choice.delta.content}
-                # Handle function calls (tool calls)
-                if choice.delta.function_call:
-                    if current_tool_call is None:
-                        # Start a new tool call
-                        current_tool_call = {
-                            "name": choice.delta.function_call.name,
-                            "arguments": choice.delta.function_call.arguments or ""
-                        }
-                    else:
-                        # Append to existing tool call arguments
-                        if choice.delta.function_call.arguments:
-                            current_tool_call["arguments"] += choice.delta.function_call.arguments
-                    # Check if arguments are complete (i.e., valid JSON)
-                    try:
-                        parsed_args = json.loads(current_tool_call["arguments"])
-                        # If parsing succeeds, yield the complete tool call
-                        tool_id = str(tool_call_counter)
-                        yield {
-                            "tool_calls": [
-                                {
-                                    "id": tool_id,
-                                    "tool_name": current_tool_call["name"],
-                                    "tool_args": parsed_args
-                                }
-                            ]
-                        }
-                        current_tool_call = None
-                        tool_call_counter += 1
-                    except json.JSONDecodeError:
-                        # Arguments are not yet complete
-                        pass
-                # Log usage stats if available
-                if chunk.usage:
-                    chat_log.async_trace(
-                        {
-                            "stats": {
-                                "input_tokens": chunk.usage.prompt_tokens,
-                                "output_tokens": chunk.usage.completion_tokens,
+            if not choice.delta:
+                continue
+            if choice.delta.role:
+                yield {"role": choice.delta.role}
+            if choice.delta.content:
+                yield {"content": choice.delta.content}
+            if choice.delta.function_call:
+                if current_tool_call is None:
+                    current_tool_call = {
+                        "name": choice.delta.function_call.name,
+                        "arguments": choice.delta.function_call.arguments or "",
+                    }
+                else:
+                    if choice.delta.function_call.arguments:
+                        current_tool_call[
+                            "arguments"
+                        ] += choice.delta.function_call.arguments
+                try:
+                    parsed_args = json.loads(current_tool_call["arguments"])
+                    tool_id = str(tool_call_counter)
+                    yield {
+                        "tool_calls": [
+                            {
+                                "id": tool_id,
+                                "tool_name": current_tool_call["name"],
+                                "tool_args": parsed_args,
                             }
+                        ]
+                    }
+                    current_tool_call = None
+                    tool_call_counter += 1
+                except json.JSONDecodeError:
+                    pass
+            if chunk.usage:
+                chat_log.async_trace(
+                    {
+                        "stats": {
+                            "input_tokens": chunk.usage.prompt_tokens,
+                            "output_tokens": chunk.usage.completion_tokens,
                         }
-                    )
-                # Log finish reason if available
-                if choice.finish_reason:
-                    LOGGER.debug("Stream finished with reason: %s", choice.finish_reason)
+                    }
+                )
 
 
 class OpenAIConversationEntity(
@@ -275,7 +288,6 @@ class OpenAIConversationEntity(
             model="Grok",
             entry_type=dr.DeviceEntryType.SERVICE,
         )
-        # Supported features will be set in async_added_to_hass when hass is available
         self._attr_supported_features = conversation.ConversationEntityFeature(0)
 
     @property
@@ -286,39 +298,72 @@ class OpenAIConversationEntity(
     async def async_added_to_hass(self) -> None:
         """When entity is added to Home Assistant."""
         await super().async_added_to_hass()
-        
-        # Update supported features based on LLM API configuration
-        llm_hass_api = self.entry.options.get(CONF_LLM_HASS_API)
-        if llm_hass_api:
-            # Handle both list and string (for backward compatibility)
-            api_ids = llm_hass_api if isinstance(llm_hass_api, list) else [llm_hass_api]
-            # Remove "none" if present
-            api_ids = [api_id for api_id in api_ids if api_id != "none"]
-            
-            if api_ids:
-                try:
-                    # Try to get at least one API to verify it exists
-                    llm.async_get_api(self.hass, api_ids[0])
-                    self._attr_supported_features = (
-                        conversation.ConversationEntityFeature.CONTROL
-                    )
-                except Exception:
-                    # API not available, no control features
-                    self._attr_supported_features = conversation.ConversationEntityFeature(0)
-            else:
-                self._attr_supported_features = conversation.ConversationEntityFeature(0)
-        else:
-            self._attr_supported_features = conversation.ConversationEntityFeature(0)
-
+        self._update_control_feature()
         conversation.async_set_agent(self.hass, self.entry, self)
         self.entry.async_on_unload(
             self.entry.add_update_listener(self._async_entry_update_listener)
         )
 
+    def _update_control_feature(self) -> None:
+        mode = self.entry.options.get(
+            CONF_INTERACTION_MODE, RECOMMENDED_INTERACTION_MODE
+        )
+        llm_hass_api = self.entry.options.get(CONF_LLM_HASS_API)
+        if mode == MODE_CHAT_ONLY or not llm_hass_api:
+            self._attr_supported_features = conversation.ConversationEntityFeature(0)
+            return
+        api_ids = llm_hass_api if isinstance(llm_hass_api, list) else [llm_hass_api]
+        api_ids = [api_id for api_id in api_ids if api_id != "none"]
+        if not api_ids:
+            self._attr_supported_features = conversation.ConversationEntityFeature(0)
+            return
+        try:
+            llm.async_get_api(self.hass, api_ids[0])
+            self._attr_supported_features = (
+                conversation.ConversationEntityFeature.CONTROL
+            )
+        except Exception:  # noqa: BLE001
+            self._attr_supported_features = conversation.ConversationEntityFeature(0)
+
     async def async_will_remove_from_hass(self) -> None:
         """When entity will be removed from Home Assistant."""
         conversation.async_unset_agent(self.hass, self.entry)
         await super().async_will_remove_from_hass()
+
+    def _usage_tracker(self) -> UsageTracker | None:
+        data = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id)
+        if not data:
+            return None
+        return data.get("usage")
+
+    async def _record_usage(
+        self, model: str, prompt_tokens: int, completion_tokens: int
+    ) -> None:
+        tracker = self._usage_tracker()
+        if tracker:
+            await tracker.async_record(
+                model=model,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                service="conversation",
+            )
+            budget = float(
+                self.entry.options.get(CONF_BUDGET_WARN_USD, 0) or 0
+            )
+            if budget > 0 and tracker.snapshot.estimated_cost_usd >= budget:
+                LOGGER.warning(
+                    "Grok estimated spend $%.4f exceeded budget warn $%.2f",
+                    tracker.snapshot.estimated_cost_usd,
+                    budget,
+                )
+                self.hass.bus.async_fire(
+                    f"{DOMAIN}_budget_warning",
+                    {
+                        "entry_id": self.entry.entry_id,
+                        "estimated_cost_usd": tracker.snapshot.estimated_cost_usd,
+                        "budget_warn_usd": budget,
+                    },
+                )
 
     async def _async_handle_message(
         self,
@@ -328,13 +373,14 @@ class OpenAIConversationEntity(
         """Call the API with function calling support."""
         try:
             return await self._async_handle_message_inner(user_input, chat_log)
-        except Exception as err:
-            LOGGER.error("Unexpected error in conversation handler: %s", err, exc_info=True)
-            import traceback
-            LOGGER.error("Full traceback: %s", traceback.format_exc())
-            # Return a proper error response instead of letting the exception bubble up
+        except Exception as err:  # noqa: BLE001
+            LOGGER.error(
+                "Unexpected error in conversation handler: %s", err, exc_info=True
+            )
             intent_response = intent.IntentResponse(language=user_input.language)
-            intent_response.async_set_speech("Sorry, I encountered an unexpected error. Please try again.")
+            intent_response.async_set_speech(
+                "Sorry, I encountered an unexpected error. Please try again."
+            )
             return conversation.ConversationResult(
                 response=intent_response,
                 conversation_id=chat_log.conversation_id if chat_log else "",
@@ -344,23 +390,151 @@ class OpenAIConversationEntity(
     def _is_tool_result_helpful(self, tool_name: str, tool_result: Any) -> bool:
         """Determine if a tool result is helpful for the conversation."""
         if isinstance(tool_result, dict):
-            # Check for error responses
             if "error" in tool_result:
                 return False
-
-            # Check for empty or unhelpful responses
-            speech = tool_result.get("speech", {}).get("plain", {}).get("speech", "")
+            speech = (
+                tool_result.get("speech", {}).get("plain", {}).get("speech", "")
+            )
             if speech in ["Not any", "No information available", ""] or not speech:
                 return False
-
-            # Check if response indicates no relevant data
             speech_lower = speech.lower()
-            if any(phrase in speech_lower for phrase in [
-                "not found", "no data", "unavailable", "not available", "not any"
-            ]):
+            if any(
+                phrase in speech_lower
+                for phrase in [
+                    "not found",
+                    "no data",
+                    "unavailable",
+                    "not available",
+                    "not any",
+                ]
+            ):
                 return False
-
         return True
+
+    def _build_extra_system_prompt(
+        self, user_input: conversation.ConversationInput
+    ) -> str:
+        """Assemble location, user, voice, and home context blocks."""
+        options = self.entry.options
+        parts: list[str] = []
+
+        if options.get(CONF_VOICE_OPTIMIZED, RECOMMENDED_VOICE_OPTIMIZED):
+            parts.append(VOICE_OPTIMIZED_SUFFIX.strip())
+
+        location = (options.get(CONF_LOCATION_CONTEXT) or "").strip()
+        if location:
+            parts.append(f"Home location context for local queries: {location}.")
+        else:
+            tz = self.hass.config.time_zone
+            if tz:
+                parts.append(f"Home Assistant timezone: {tz}.")
+
+        if options.get(CONF_SEND_USER_NAME, RECOMMENDED_SEND_USER_NAME):
+            name = self._resolve_user_name(user_input)
+            if name:
+                parts.append(
+                    f"The current user is named {name}. Address them by name when natural."
+                )
+
+        if options.get(CONF_HOME_CONTEXT, RECOMMENDED_HOME_CONTEXT):
+            now = dt_util.now()
+            parts.append(f"Current local time: {now.strftime('%A %Y-%m-%d %H:%M')}.")
+            # Light presence snapshot
+            people = []
+            for state in self.hass.states.async_all("person"):
+                people.append(
+                    f"{state.attributes.get('friendly_name', state.entity_id)}={state.state}"
+                )
+            if people:
+                parts.append("Person presence: " + ", ".join(people[:12]) + ".")
+            weather = next(
+                (
+                    s
+                    for s in self.hass.states.async_all("weather")
+                    if s.state not in ("unavailable", "unknown")
+                ),
+                None,
+            )
+            if weather:
+                temp = weather.attributes.get("temperature")
+                unit = weather.attributes.get("temperature_unit", "")
+                parts.append(
+                    f"Weather entity {weather.entity_id}: {weather.state}"
+                    + (f", {temp}{unit}" if temp is not None else "")
+                    + "."
+                )
+
+        return "\n".join(parts)
+
+    def _resolve_user_name(
+        self, user_input: conversation.ConversationInput
+    ) -> str | None:
+        """Best-effort user display name from person entity or HA user."""
+        context = user_input.context
+        user_id = getattr(context, "user_id", None) if context else None
+        if user_id:
+            for state in self.hass.states.async_all("person"):
+                if state.attributes.get("user_id") == user_id:
+                    return state.attributes.get("friendly_name") or state.name
+            user = self.hass.auth.async_get_user(user_id) if self.hass.auth else None
+            if user and user.name:
+                return user.name
+        return None
+
+    def _select_model(self, user_text: str, options: dict) -> str:
+        """Pick chat/fast model based on auto-routing."""
+        primary = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        fast = options.get(CONF_FAST_MODEL, RECOMMENDED_FAST_MODEL)
+        if options.get(CONF_AUTO_MODEL_ROUTING, RECOMMENDED_AUTO_MODEL_ROUTING):
+            if looks_like_simple_query(user_text) and not looks_like_search_query(
+                user_text
+            ):
+                return fast or primary
+        return primary
+
+    async def _try_pipeline(
+        self, user_input: conversation.ConversationInput
+    ) -> conversation.ConversationResult | None:
+        """Try built-in Home Assistant conversation agent first."""
+        try:
+            result = await conversation.async_converse(
+                self.hass,
+                text=user_input.text,
+                conversation_id=None,
+                context=user_input.context,
+                language=user_input.language,
+                agent_id="conversation.home_assistant",
+                device_id=user_input.device_id,
+            )
+        except Exception as err:  # noqa: BLE001
+            LOGGER.debug("Pipeline HA agent failed: %s", err)
+            return None
+
+        speech = ""
+        if result and result.response:
+            speech = result.response.speech.get("plain", {}).get("speech", "")
+            # Also check response response types
+            if not speech and hasattr(result.response, "as_dict"):
+                data = result.response.as_dict()
+                speech = (
+                    data.get("speech", {}).get("plain", {}).get("speech", "") or ""
+                )
+        if not speech:
+            return None
+        lowered = speech.lower()
+        fallback_markers = (
+            "sorry",
+            "i am not aware",
+            "i'm not aware",
+            "don't know",
+            "do not know",
+            "no intent",
+            "not sure how",
+            "can you rephrase",
+        )
+        if any(m in lowered for m in fallback_markers):
+            return None
+        return result
 
     async def _async_handle_message_inner(
         self,
@@ -369,103 +543,214 @@ class OpenAIConversationEntity(
     ) -> conversation.ConversationResult:
         """Inner method that handles the actual conversation logic."""
         options = self.entry.options
+        mode = options.get(CONF_INTERACTION_MODE, RECOMMENDED_INTERACTION_MODE)
 
-        # Debug logging for device/satellite requests
         LOGGER.info(
-            "Grok conversation agent handling message - device_id: %s, text: %s, language: %s, agent_id: %s",
+            "Grok handling message mode=%s device_id=%s text=%s",
+            mode,
             user_input.device_id,
             user_input.text,
-            user_input.language,
-            user_input.agent_id
         )
 
-        # Log LLM API availability
-        llm_hass_api = options.get(CONF_LLM_HASS_API)
-        LOGGER.debug("LLM HASS API config: %s", llm_hass_api)
+        # Intelligent pipeline: HA intent first
+        if mode == MODE_PIPELINE:
+            piped = await self._try_pipeline(user_input)
+            if piped is not None:
+                LOGGER.debug("Served via HA intent pipeline")
+                return piped
+
+        # Chat-only: disable LLM HASS API tools
+        llm_api_option = None if mode == MODE_CHAT_ONLY else options.get(CONF_LLM_HASS_API)
+
+        extra = self._build_extra_system_prompt(user_input)
+        user_extra = user_input.extra_system_prompt or ""
+        combined_extra = "\n".join(p for p in (extra, user_extra) if p)
 
         try:
             await chat_log.async_provide_llm_data(
                 user_input.as_llm_context(DOMAIN),
-                options.get(CONF_LLM_HASS_API),
+                llm_api_option,
                 options.get(CONF_PROMPT),
-                user_input.extra_system_prompt,
+                combined_extra or None,
             )
-            LOGGER.debug("LLM data provided successfully, chat_log.llm_api: %s", chat_log.llm_api)
         except conversation.ConverseError as err:
             LOGGER.error("ConverseError in async_provide_llm_data: %s", err)
             return err.as_conversation_result()
 
-        model = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        model = self._select_model(user_input.text, options)
+        fallback_model = options.get(CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL)
         messages = [
             m
             for content in chat_log.content
             for m in _convert_content_to_param(content)
         ]
-        LOGGER.debug("Prepared %d messages for API call", len(messages))
+
+        # Prefix username on latest user message when enabled
+        if options.get(CONF_SEND_USER_NAME, RECOMMENDED_SEND_USER_NAME):
+            name = self._resolve_user_name(user_input)
+            if name and messages:
+                for i in range(len(messages) - 1, -1, -1):
+                    if messages[i].get("role") == "user":
+                        content = messages[i].get("content")
+                        if isinstance(content, str) and not content.startswith(
+                            f"[{name}]"
+                        ):
+                            messages[i] = {
+                                **messages[i],
+                                "content": f"[{name}] {content}",
+                            }
+                        break
 
         client = self.entry.runtime_data
+        live_search = options.get(CONF_LIVE_SEARCH, RECOMMENDED_LIVE_SEARCH)
+        show_citations = options.get(CONF_SHOW_CITATIONS, RECOMMENDED_SHOW_CITATIONS)
 
-        # To prevent infinite loops, we limit the number of iterations
+        # Prefer Responses API when live search is needed and no HA tools this turn
+        use_search = live_search and live_search != LIVE_SEARCH_OFF and (
+            looks_like_search_query(user_input.text) or mode == MODE_CHAT_ONLY
+        )
+        ha_tools_available = bool(chat_log.llm_api and chat_log.llm_api.tools)
+
+        if use_search and not ha_tools_available:
+            try:
+                system_bits = []
+                if options.get(CONF_PROMPT):
+                    system_bits.append(str(options.get(CONF_PROMPT)))
+                if combined_extra:
+                    system_bits.append(combined_extra)
+                text, p_tok, c_tok = await async_responses_completion(
+                    client,
+                    model=model,
+                    messages=[m for m in messages if m.get("role") != "system"],  # type: ignore[arg-type]
+                    system_prompt="\n\n".join(system_bits) or None,
+                    max_tokens=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
+                    temperature=options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
+                    top_p=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
+                    live_search=live_search,
+                    show_citations=bool(show_citations),
+                    reasoning_effort=options.get(CONF_REASONING_EFFORT),
+                )
+                text = _strip_json_from_response(text)
+                if text:
+                    async for _ in chat_log.async_add_assistant_content(
+                        conversation.AssistantContent(
+                            agent_id=user_input.agent_id, content=text
+                        )
+                    ):
+                        pass
+                await self._record_usage(model, p_tok, c_tok)
+                intent_response = intent.IntentResponse(language=user_input.language)
+                intent_response.async_set_speech(
+                    text or "Sorry, I couldn't generate a response."
+                )
+                return conversation.ConversationResult(
+                    response=intent_response,
+                    conversation_id=chat_log.conversation_id,
+                    continue_conversation=chat_log.continue_conversation,
+                )
+            except Exception as err:  # noqa: BLE001
+                LOGGER.warning(
+                    "Live search path failed (%s); falling back to chat completions",
+                    err,
+                )
+
+        # Tool-calling chat completions loop
+        models_to_try = [model]
+        if fallback_model and fallback_model != model:
+            models_to_try.append(fallback_model)
+
+        last_error: Exception | None = None
+        for active_model in models_to_try:
+            try:
+                result = await self._tool_loop(
+                    user_input=user_input,
+                    chat_log=chat_log,
+                    messages=list(messages),
+                    model=active_model,
+                    options=options,
+                    client=client,
+                )
+                return result
+            except openai.RateLimitError as err:
+                last_error = err
+                LOGGER.error("Rate limited by xAI on %s: %s", active_model, err)
+                break
+            except openai.OpenAIError as err:
+                last_error = err
+                LOGGER.warning(
+                    "Model %s failed (%s); trying fallback if available",
+                    active_model,
+                    err,
+                )
+                continue
+            except TokenLengthExceededError:
+                raise
+            except Exception as err:  # noqa: BLE001
+                last_error = err
+                LOGGER.warning("Unexpected error on %s: %s", active_model, err)
+                continue
+
+        if isinstance(last_error, openai.RateLimitError):
+            raise HomeAssistantError("Rate limited or insufficient funds") from last_error
+        raise HomeAssistantError(f"Error talking to xAI: {last_error}") from last_error
+
+    async def _tool_loop(
+        self,
+        *,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+        messages: list,
+        model: str,
+        options,
+        client,
+    ) -> conversation.ConversationResult:
+        """Run chat completion tool iterations for one model."""
         for _iteration in range(MAX_TOOL_ITERATIONS):
-            # Prepare tools for the API call if LLM API is available
             tools: list[dict[str, Any]] | None = None
             if chat_log.llm_api:
                 tools = [
                     _format_tool(tool, None) for tool in chat_log.llm_api.tools
                 ]
-                LOGGER.debug("Prepared %d tools for API call: %s", len(tools), tools)
-
-            model_args = {
-                "model": model,
-                "messages": messages,
-                "max_tokens": options.get(
-                    CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS
-                ),
-                "top_p": options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
-                "temperature": options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
-                "user": chat_log.conversation_id,
-                "stream": False,
-            }
-
-            # Add reasoning_effort if the model supports it (Grok reasoning models)
-            # Only add reasoning_effort for models that support it (models with "reasoning" in the name)
-            reasoning_effort = options.get(CONF_REASONING_EFFORT)
-            if reasoning_effort and reasoning_effort != "none" and "reasoning" in model.lower():
-                model_args["reasoning_effort"] = reasoning_effort
-
-            if tools:
-                model_args["tools"] = tools
-                model_args["tool_choice"] = "auto"
 
             try:
-                LOGGER.debug("Sending API request: %s", model_args)
-                result = await client.chat.completions.create(**model_args)
-                LOGGER.debug("API response received: %s", result.choices[0].message.content if result.choices else "No choices")
+                result = await async_chat_completion(
+                    client,
+                    model=model,
+                    messages=messages,
+                    max_tokens=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
+                    top_p=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
+                    temperature=options.get(
+                        CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
+                    ),
+                    tools=tools,
+                    tool_choice="auto" if tools else None,
+                    reasoning_effort=options.get(
+                        CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
+                    ),
+                    user=chat_log.conversation_id,
+                )
+            except openai.OpenAIError:
+                raise
 
-                choice = result.choices[0]
-                message = choice.message
+            choice = result.choices[0]
+            message = choice.message
+            p_tok, c_tok = extract_usage(result)
 
-                # Handle tool calls if present
-                if hasattr(message, 'tool_calls') and message.tool_calls:
-                    # Add external attribute to OpenAI tool calls for Home Assistant compatibility
-                    ha_tool_calls = []
-                    for tc in message.tool_calls:
-                        # Create a copy with external attribute
-                        tc.external = True  # External tool calls (not internal HA functions)
-                        ha_tool_calls.append(tc)
+            if getattr(message, "tool_calls", None):
+                ha_tool_calls = []
+                for tc in message.tool_calls:
+                    tc.external = True
+                    ha_tool_calls.append(tc)
 
-                    # Add assistant message with tool calls
-                    assistant_content = conversation.AssistantContent(
-                        agent_id=user_input.agent_id,
-                        content=message.content or "",
-                        tool_calls=ha_tool_calls
-                    )
-
-                    # Store the OpenAI tool call objects directly
-                    tool_calls = message.tool_calls
-                    async for _ in chat_log.async_add_assistant_content(assistant_content):
-                        pass  # Consume the async generator
-                    messages.append({
+                assistant_content = conversation.AssistantContent(
+                    agent_id=user_input.agent_id,
+                    content=message.content or "",
+                    tool_calls=ha_tool_calls,
+                )
+                async for _ in chat_log.async_add_assistant_content(assistant_content):
+                    pass
+                messages.append(
+                    {
                         "role": "assistant",
                         "content": message.content,
                         "tool_calls": [
@@ -474,167 +759,135 @@ class OpenAIConversationEntity(
                                 "type": tc.type,
                                 "function": {
                                     "name": tc.function.name,
-                                    "arguments": tc.function.arguments
-                                }
+                                    "arguments": tc.function.arguments,
+                                },
                             }
-                            for tc in tool_calls
-                        ]
-                    })
+                            for tc in message.tool_calls
+                        ],
+                    }
+                )
 
-                    # Execute tool calls using LLM API
-                    LOGGER.debug("Received %d tool calls from API", len(message.tool_calls))
-                    for tool_call in message.tool_calls:
-                        try:
-                            tool_name = tool_call.function.name
-                            tool_args = json.loads(tool_call.function.arguments)
-                            LOGGER.debug("Executing tool: %s with args: %s", tool_name, tool_args)
-
-                            # Execute the tool using LLM API from chat_log
-                            if not chat_log.llm_api:
-                                tool_result = {"error": "LLM HASS API not configured"}
-                                LOGGER.error(
-                                    "Cannot execute tool %s: LLM HASS API not configured",
-                                    tool_name
-                                )
+                for tool_call in message.tool_calls:
+                    try:
+                        tool_name = tool_call.function.name
+                        tool_args = json.loads(tool_call.function.arguments)
+                        if not chat_log.llm_api:
+                            tool_result: Any = {
+                                "error": "LLM HASS API not configured"
+                            }
+                        else:
+                            tool = next(
+                                (
+                                    t
+                                    for t in chat_log.llm_api.tools
+                                    if t.name == tool_name
+                                ),
+                                None,
+                            )
+                            if tool is None:
+                                tool_result = {
+                                    "error": f"Tool {tool_name} not found"
+                                }
                             else:
-                                try:
-                                    # Find the tool in the LLM API instance
-                                    tool = None
-                                    for t in chat_log.llm_api.tools:
-                                        if t.name == tool_name:
-                                            tool = t
-                                            break
-
-                                    if tool is None:
-                                        tool_result = {"error": f"Tool {tool_name} not found"}
-                                        LOGGER.error("Tool %s not found in LLM API", tool_name)
-                                    else:
-                                        # Create ToolInput for the tool
-                                        tool_input = ToolInput(
-                                            tool_name=tool_name,
-                                            tool_args=tool_args,
-                                            context=user_input.context,
-                                            user_prompt=user_input.text,
-                                            language=user_input.language,
-                                            assistant="conversation",
-                                            device_id=user_input.device_id,
-                                        )
-                                        tool_result = await tool.async_call(
-                                            self.hass, tool_input, user_input.as_llm_context(DOMAIN)
-                                        )
-                                        LOGGER.debug("Tool %s executed successfully: %s", tool_name, tool_result)
-                                except Exception as err:
-                                    LOGGER.error(
-                                        "Error executing tool %s: %s", tool_name, err, exc_info=True
-                                    )
-                                    tool_result = {"error": str(err)}
-
-                            # Check if tool result is useful before adding to conversation
-                            is_helpful_result = self._is_tool_result_helpful(tool_name, tool_result)
-                            LOGGER.debug("Tool %s result helpful: %s, result: %s", tool_name, is_helpful_result, tool_result)
-
-                            if is_helpful_result:
-                                # Add tool result to messages
-                                # Note: async_add_tool_result method may not be available in current HA version
-                                # For now, we'll skip adding tool results to chat log to avoid errors
-                                pass
-                                messages.append({
+                                tool_input = ToolInput(
+                                    tool_name=tool_name,
+                                    tool_args=tool_args,
+                                    context=user_input.context,
+                                    user_prompt=user_input.text,
+                                    language=user_input.language,
+                                    assistant="conversation",
+                                    device_id=user_input.device_id,
+                                )
+                                tool_result = await tool.async_call(
+                                    self.hass,
+                                    tool_input,
+                                    user_input.as_llm_context(DOMAIN),
+                                )
+                        if self._is_tool_result_helpful(tool_name, tool_result):
+                            messages.append(
+                                {
                                     "role": "tool",
                                     "tool_call_id": tool_call.id,
-                                    "content": json.dumps(tool_result)
-                                })
-                            else:
-                                # Tool result not helpful, add a note but don't include the unhelpful result
-                                LOGGER.debug("Skipping unhelpful tool result for %s", tool_name)
-                                # Note: async_add_tool_result method may not be available in current HA version
-                                # For now, we'll skip adding tool results to chat log to avoid errors
-                                pass
-
-                        except Exception as err:
-                            LOGGER.error("Error executing tool %s: %s", tool_call.function.name, err)
-                            # Don't add error results to conversation - let LLM try to answer without tool
-                            # Note: async_add_tool_result method may not be available in current HA version
-                            # For now, we'll skip adding tool results to chat log to avoid errors
-                            pass
-
-                    # Continue the loop to get the final response
-                    continue
-
-                else:
-                    # No tool calls, this is the final response
-                    full_response = message.content or ""
-                    # Strip any JSON metadata from the end of the response
-                    full_response = _strip_json_from_response(full_response)
-                    LOGGER.debug("API response: %s", full_response)
-
-                    # Add the response as AssistantContent
-                    if full_response:
-                        async for _ in chat_log.async_add_assistant_content(
-                            conversation.AssistantContent(
-                                agent_id=user_input.agent_id,
-                                content=full_response
+                                    "content": json.dumps(tool_result),
+                                }
                             )
-                        ):
-                            pass  # Consume the async generator
-                        messages.append({"role": "assistant", "content": full_response})
-                    else:
-                        LOGGER.warning("No assistant content received from API response")
-
-                # Log usage stats if available
-                if result.usage:
-                    chat_log.async_trace(
-                        {
-                            "stats": {
-                                "input_tokens": result.usage.prompt_tokens,
-                                "output_tokens": result.usage.completion_tokens,
+                        else:
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": json.dumps(
+                                        {
+                                            "note": "Tool returned no useful data; answer from knowledge if possible."
+                                        }
+                                    ),
+                                }
+                            )
+                    except Exception as err:  # noqa: BLE001
+                        LOGGER.error(
+                            "Error executing tool %s: %s",
+                            tool_call.function.name,
+                            err,
+                        )
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": json.dumps({"error": str(err)}),
                             }
-                        }
+                        )
+
+                await self._record_usage(model, p_tok, c_tok)
+                continue
+
+            full_response = _strip_json_from_response(message.content or "")
+            if full_response:
+                async for _ in chat_log.async_add_assistant_content(
+                    conversation.AssistantContent(
+                        agent_id=user_input.agent_id, content=full_response
                     )
+                ):
+                    pass
+                messages.append({"role": "assistant", "content": full_response})
 
-                # Check finish reason
-                if choice.finish_reason == "length":
-                    raise TokenLengthExceededError(options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS))
+            if result.usage:
+                chat_log.async_trace(
+                    {
+                        "stats": {
+                            "input_tokens": result.usage.prompt_tokens,
+                            "output_tokens": result.usage.completion_tokens,
+                        }
+                    }
+                )
+            await self._record_usage(model, p_tok, c_tok)
 
-                break  # Exit loop after successful response
+            if choice.finish_reason == "length":
+                raise TokenLengthExceededError(
+                    options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS)
+                )
+            break
 
-            except openai.RateLimitError as err:
-                LOGGER.error("Rate limited by xAI: %s", err)
-                raise HomeAssistantError("Rate limited or insufficient funds") from err
-            except openai.OpenAIError as err:
-                LOGGER.error("Error talking to xAI: %s", err, exc_info=True)
-                raise HomeAssistantError(f"Error talking to xAI: {err}") from err
-            except Exception as err:
-                LOGGER.error("Unexpected error in conversation handler: %s", err, exc_info=True)
-                raise HomeAssistantError(f"Unexpected error: {err}") from err
-
-        # Create intent response
         intent_response = intent.IntentResponse(language=user_input.language)
-
-        # Get the last assistant content for speech
         last_assistant_content = None
         for content in reversed(chat_log.content):
             if isinstance(content, conversation.AssistantContent):
                 last_assistant_content = content
                 break
-
         if last_assistant_content and last_assistant_content.content:
-            LOGGER.debug("Setting speech response: %s", last_assistant_content.content)
             intent_response.async_set_speech(last_assistant_content.content)
         else:
-            LOGGER.warning("No assistant content found, using fallback response")
-            intent_response.async_set_speech("Sorry, I couldn't generate a response.")
+            intent_response.async_set_speech(
+                "Sorry, I couldn't generate a response."
+            )
 
-        result = conversation.ConversationResult(
+        return conversation.ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,
             continue_conversation=chat_log.continue_conversation,
         )
-        LOGGER.debug("Returning conversation result: %s", result)
-        return result
 
     async def _async_entry_update_listener(
         self, hass: HomeAssistant, entry: ConfigEntry
     ) -> None:
         """Handle options update."""
-        # Reload as we update device info + entity name + supported features
         await hass.config_entries.async_reload(entry.entry_id)

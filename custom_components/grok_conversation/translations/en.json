@@ -1,73 +1,82 @@
 {
   "config": {
-      "error": {
-          "cannot_connect": "Failed to connect",
-          "invalid_auth": "Invalid authentication",
-          "unknown": "Unexpected error"
-      },
-      "step": {
-          "user": {
-              "data": {
-                  "name": "Name",
-                  "api_key": "API Key",
-                  "base_url": "Base Url",
-                  "api_version": "Api Version",
-                  "organization": "Organization",
-                  "skip_authentication": "Skip Authentication"
-              }
-          }
+    "error": {
+      "cannot_connect": "Failed to connect",
+      "invalid_auth": "Invalid authentication",
+      "unknown": "Unexpected error"
+    },
+    "step": {
+      "user": {
+        "data": {
+          "api_key": "API Key"
+        },
+        "description": "Enter your xAI API key from https://console.x.ai/"
       }
+    }
   },
   "options": {
-      "step": {
-          "init": {
-              "data": {
-                  "max_tokens": "Maximum tokens to return in response",
-                  "model": "Completion Model",
-                  "prompt": "Prompt Template",
-                  "temperature": "Temperature",
-                  "top_p": "Top P",
-                  "reasoning_effort": "Reasoning effort",
-                  "max_function_calls_per_conversation": "Maximum function calls per conversation",
-                  "functions": "Functions",
-                  "attach_username": "Attach Username to Message",
-                  "use_tools": "Use Tools",
-                  "context_threshold": "Context Threshold",
-                  "context_truncate_strategy": "Context truncation strategy when exceeded threshold"
-              }
-          }
+    "step": {
+      "init": {
+        "data": {
+          "prompt": "Instructions",
+          "chat_model": "Chat model",
+          "fast_model": "Fast model (auto-routing)",
+          "fallback_model": "Fallback model",
+          "max_tokens": "Maximum tokens to return in response",
+          "temperature": "Temperature",
+          "top_p": "Top P",
+          "reasoning_effort": "Reasoning effort",
+          "llm_hass_api": "Home Assistant LLM API",
+          "recommended": "Recommended model settings",
+          "live_search": "Live Search (Web / X)",
+          "show_citations": "Show search citations",
+          "send_user_name": "Include username in messages",
+          "location_context": "Home location context",
+          "interaction_mode": "Interaction mode",
+          "voice_optimized": "Voice-optimized replies",
+          "auto_model_routing": "Auto-route simple requests to fast model",
+          "home_context": "Inject home context (time, presence, weather)",
+          "budget_warn_usd": "Budget warning threshold (USD, 0=off)"
+        }
       }
+    },
+    "error": {
+      "model_not_supported": "This model is not supported, please select a different model",
+      "llm_api_not_found": "The selected LLM HASS API is not available."
+    }
   },
   "services": {
-      "query_image": {
-          "name": "Query image",
-          "description": "Take in images and answer questions about them",
-          "fields": {
-              "config_entry": {
-                  "name": "Config Entry",
-                  "description": "The config entry to use for this service"
-              },
-              "model": {
-                  "name": "Model",
-                  "description": "The model",
-                  "example": "grok-2-vision-1212"
-              },
-              "prompt": {
-                  "name": "Prompt",
-                  "description": "The text to ask about image",
-                  "example": "What’s in this image?"
-              },
-              "images": {
-                  "name": "Images",
-                  "description": "A list of images that would be asked",
-                  "example": "example.jpg"
-              },
-              "max_tokens": {
-                  "name": "Max Tokens",
-                  "description": "The maximum tokens",
-                  "example": "300"
-              }
-          }
-      }
+    "ask": {
+      "name": "Ask (stateless)",
+      "description": "One-shot stateless Grok query with optional live search"
+    },
+    "photo_analysis": {
+      "name": "Photo analysis",
+      "description": "Analyze images with Grok Vision"
+    },
+    "query_image": {
+      "name": "Query image",
+      "description": "Legacy alias for photo analysis"
+    },
+    "generate_image": {
+      "name": "Generate image",
+      "description": "Turn a prompt into an image"
+    },
+    "generate_content": {
+      "name": "Generate content",
+      "description": "Send a prompt (and optional images) to Grok"
+    },
+    "clear_memory": {
+      "name": "Clear memory",
+      "description": "Reload integration to reset agent memory"
+    },
+    "reset_stats": {
+      "name": "Reset usage stats",
+      "description": "Zero token/cost sensors"
+    },
+    "home_briefing": {
+      "name": "Home briefing",
+      "description": "Summarize current home state with Grok"
+    }
   }
 }
