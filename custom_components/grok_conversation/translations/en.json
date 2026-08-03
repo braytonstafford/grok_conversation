@@ -10,7 +10,7 @@
         "data": {
           "api_key": "API Key"
         },
-        "description": "Enter your xAI API key from https://console.x.ai/"
+        "description": "Enter your xAI API key from the xAI console."
       }
     }
   },

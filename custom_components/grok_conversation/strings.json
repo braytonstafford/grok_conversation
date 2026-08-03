@@ -5,7 +5,7 @@
         "data": {
           "api_key": "[%key:common::config_flow::data::api_key%]"
         },
-        "description": "Enter your xAI API key from https://console.x.ai/"
+        "description": "Enter your xAI API key from the xAI console."
       }
     },
     "error": {
