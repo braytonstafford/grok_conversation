@@ -120,6 +120,8 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 
 ## Version
 
+**1.7.3** — Merge all anyOf object-branch properties for timer tools (#25, thanks @CodyJon).
+
 **1.7.2** — Sanitize HA tool JSON schemas for xAI (fix HassStartTimer anyOf/oneOf 400).
 
 **1.7.1** — Fix STT crash (`SAMPLERATE_22050` → valid HA rates); rename engines to **xAI TTS** / **xAI STT**.

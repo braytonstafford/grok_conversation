@@ -106,7 +106,8 @@ def _sanitize_tool_schema(schema: Any) -> dict[str, Any]:
     """Normalize tool JSON schema for xAI function calling.
 
     xAI rejects roots that are anyOf/oneOf unions (e.g. HA HassStartTimer).
-    Keep an object-shaped schema with properties whenever possible.
+    Merge properties from every object branch so alternate arg shapes
+    (name vs hours/minutes/seconds) are all still available to the model.
     """
     if not isinstance(schema, dict):
         return {
@@ -115,14 +116,38 @@ def _sanitize_tool_schema(schema: Any) -> dict[str, Any]:
             "additionalProperties": True,
         }
 
-    def _pick_object_branch(branches: list[Any]) -> dict[str, Any] | None:
-        objectish: list[dict[str, Any]] = []
+    def _merge_union_branches(branches: list[Any]) -> dict[str, Any] | None:
+        """Collapse anyOf/oneOf/allOf into one object schema.
+
+        Properties from every object-like branch are merged so no timer /
+        alternate-shape parameters are dropped. ``required`` is dropped
+        because it is no longer valid across merged alternatives.
+        """
+        props: dict[str, Any] = {}
+        objectish = 0
         for branch in branches:
             if not isinstance(branch, dict):
                 continue
+            # Recurse first so nested unions flatten too
+            branch = _clean(branch)
+            if not isinstance(branch, dict):
+                continue
             if branch.get("type") == "object" or "properties" in branch:
-                objectish.append(branch)
-        return objectish[0] if objectish else None
+                objectish += 1
+                nested = branch.get("properties")
+                if isinstance(nested, dict):
+                    props.update(nested)
+        if objectish:
+            return {
+                "type": "object",
+                "properties": props,
+                "additionalProperties": True,
+            }
+        # No object branch — keep first dict branch (cleaned)
+        for branch in branches:
+            if isinstance(branch, dict):
+                return _clean(branch)
+        return None
 
     def _clean(node: Any) -> Any:
         if not isinstance(node, dict):
@@ -134,15 +159,18 @@ def _sanitize_tool_schema(schema: Any) -> dict[str, Any]:
             if union_key not in node or not isinstance(node[union_key], list):
                 continue
             branches = node[union_key]
-            chosen = _pick_object_branch(branches)
-            if chosen is None and branches:
-                # Fall back to first dict branch
-                chosen = next((b for b in branches if isinstance(b, dict)), None)
-            rest = {k: v for k, v in node.items() if k != union_key}
-            if isinstance(chosen, dict):
-                node = {**chosen, **rest}
+            merged = _merge_union_branches(branches)
+            rest = {
+                k: v
+                for k, v in node.items()
+                if k not in (union_key, "required")
+            }
+            if isinstance(merged, dict):
+                # Branch content wins for type/properties; outer keys fill gaps
+                node = {**rest, **merged}
             else:
                 node = rest
+            # Only collapse one union key per pass; re-enter via recursion below
             break
 
         # Normalize type lists that include object
@@ -195,9 +223,12 @@ def _sanitize_tool_schema(schema: Any) -> dict[str, Any]:
     if not isinstance(cleaned["properties"], dict):
         cleaned["properties"] = {}
 
-    # Strip root-level keys xAI/OpenAI often reject as schema root
+    # Strip root-level keys xAI rejects on tool parameter schemas
     for bad in ("oneOf", "anyOf", "allOf", "not", "enum"):
         cleaned.pop(bad, None)
+    # Drop required after union merge — alternatives make it invalid
+    if "required" in cleaned and not cleaned.get("properties"):
+        cleaned.pop("required", None)
 
     return cleaned
 
