@@ -39,7 +39,13 @@
           "voice_optimized": "Voice-optimized replies",
           "auto_model_routing": "Auto-route simple requests to fast model",
           "home_context": "Inject home context (time, presence, weather)",
-          "budget_warn_usd": "Budget warning threshold (USD, 0=off)"
+          "budget_warn_usd": "Budget warning threshold (USD, 0=off)",
+          "enable_tts": "Enable xAI Text-to-Speech engine",
+          "enable_stt": "Enable xAI Speech-to-Text engine",
+          "tts_voice": "Default TTS voice",
+          "tts_language": "Default TTS language",
+          "tts_speed": "TTS speed (0.7–1.5)",
+          "stt_language": "Default STT language"
         },
         "data_description": {
           "prompt": "Instruct how the LLM should respond. This can be a template.",
@@ -49,7 +55,12 @@
           "location_context": "e.g. Longview, TX — helps local weather/news search.",
           "fast_model": "Used when auto-routing detects a short/simple command.",
           "fallback_model": "Tried automatically if the primary model errors.",
-          "budget_warn_usd": "Fires grok_conversation_budget_warning when estimated spend crosses this USD value."
+          "budget_warn_usd": "Fires grok_conversation_budget_warning when estimated spend crosses this USD value.",
+          "enable_tts": "Registers an xAI Grok TTS engine selectable under Settings → Voice assistants.",
+          "enable_stt": "Registers an xAI Grok STT engine selectable under Settings → Voice assistants.",
+          "tts_voice": "Default voice when Assist does not override (Eve, Ara, Rex, …).",
+          "tts_language": "BCP-47 language for synthesis (en, es-ES, pt-BR, …).",
+          "stt_language": "Language hint for transcription formatting."
         }
       }
     },

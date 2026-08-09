@@ -1,14 +1,24 @@
-![xAI logo](https://brands.home-assistant.io/_/grok_conversation/icon.png)
-
 # xAI Grok Conversation
 
-**Home Assistant conversation agent powered by xAI Grok** — Assist control, live Web/X search, vision, image generation, usage sensors, and automation-ready services.
+**Home Assistant conversation agent + cloud Voice TTS/STT powered by xAI Grok.**
+
+One HACS install → **Conversation agent**, **Speech-to-text**, and **Text-to-speech** engines that use your existing xAI API key.
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/braytonstafford/grok_conversation)
 [![GitHub release](https://img.shields.io/github/v/release/braytonstafford/grok_conversation)](https://github.com/braytonstafford/grok_conversation/releases)
 [![HA](https://img.shields.io/badge/Home%20Assistant-2026.7%2B-blue)](https://www.home-assistant.io/)
 
-Derived from [OpenAI Conversation](https://www.home-assistant.io/integrations/openai_conversation/) patterns, pointed at the xAI OpenAI-compatible API (`https://api.x.ai/v1`) plus the **Responses API** for server-side Web/X search.
+---
+
+## What's included
+
+| Engine | Where it appears | API |
+| --- | --- | --- |
+| **Conversation** | Voice assistants → Conversation agent → **Grok** | Chat / tools / live search |
+| **Speech-to-text** | Voice assistants → Speech-to-text → **xAI Grok** | `POST https://api.x.ai/v1/stt` |
+| **Text-to-speech** | Voice assistants → Text-to-speech → **xAI Grok** | `POST https://api.x.ai/v1/tts` |
+
+Replace Piper / speech-to-phrase with Grok cloud quality while keeping your Satellite1 (or any Assist pipeline) wake word local.
 
 ---
 
@@ -17,49 +27,42 @@ Derived from [OpenAI Conversation](https://www.home-assistant.io/integrations/op
 | Feature | Description |
 | --- | --- |
 | **Assist / LLM tools** | Control exposed HA entities via the standard LLM HASS API |
-| **Interaction modes** | `tools` · `pipeline` (HA intent first → Grok) · `chat_only` |
-| **Live Search** | Web Search, X Search, or Full — with optional **citations** |
-| **User recognition** | Prefixed person/user name so Grok addresses you correctly |
-| **Location context** | e.g. `Longview, TX` for local weather/news grounding |
-| **Voice-optimized** | Short spoken answers for Assist satellites |
-| **Home context** | Injects local time, person presence, and weather snapshot |
-| **Auto model routing** | Simple commands → fast model; complex → primary model |
-| **Fallback model** | Automatic retry on primary model API errors |
-| **Usage sensors** | Tokens, requests, estimated USD cost, last model |
-| **Budget warning event** | `grok_conversation_budget_warning` when spend crosses a threshold |
-| **Services** | `ask`, `photo_analysis`, `home_briefing`, `generate_image`, `generate_content`, `clear_memory`, `reset_stats` |
-
-### Why this vs other xAI integrations?
-
-- Stays on the **OpenAI-compatible SDK** (simple deps, familiar stack) while still using **Responses live search**.
-- **Auto model routing + fallback** for lower latency/cost on routine Assist commands.
-- **`home_briefing`** service — one call snapshots HA state and returns a spoken status report (great for morning automations).
-- **Budget warning** event for spend guardrails.
-- Voice-first defaults without giving up power-user options.
+| **xAI TTS** | 25+ expressive voices (Eve, Ara, Rex, Luna, …), speed, languages |
+| **xAI STT** | Multilingual transcription (25+ languages), PCM/WAV from Assist satellites |
+| **Voice API check** | Probes the key for Voice access at setup; warns if chat-only |
+| **Interaction modes** | `tools` · `pipeline` · `chat_only` |
+| **Live Search** | Web / X / Full + citations |
+| **Services** | `ask`, `photo_analysis`, `home_briefing`, image/content generation |
 
 ---
 
-## Installation
+## Installation (HACS)
 
-### HACS (recommended)
+1. HACS → Integrations → ⋮ → **Custom repositories**
+2. URL: `https://github.com/braytonstafford/grok_conversation` · Category: **Integration**
+3. Download **xAI Grok (Conversation + Voice TTS/STT)**
+4. Restart Home Assistant
+5. Settings → Devices & Services → Add Integration → **xAI Grok Conversation**
+6. Paste API key from [console.x.ai](https://console.x.ai/)
 
-1. HACS → Integrations → ⋮ → Custom repositories  
-2. URL: `https://github.com/braytonstafford/grok_conversation` · Category: Integration  
-3. Download **xAI Grok Conversation**  
-4. Restart Home Assistant  
+### Wire Assist (Voice assistants UI)
 
-### Manual
+1. **Settings → Voice assistants →** edit *Local Assistant* (or add one)
+2. **Conversation agent** → **Grok**
+3. **Speech-to-text** → **xAI Grok** · Language e.g. `en` / English
+4. **Text-to-speech** → **xAI Grok** · Language e.g. `en` · **Voice** → Eve / Ara / Rex / …
+5. **Try voice** to preview TTS
+6. Save / Update
 
-Copy `custom_components/grok_conversation` into `<config>/custom_components/` and restart.
+Default voice/language can also be set under the integration **Configure** options (TTS voice, TTS language, STT language, speed).
 
-### Setup
+### Voice API access
 
-1. Settings → Devices & Services → Add Integration → **xAI Grok Conversation**  
-2. Paste an API key from [console.x.ai](https://console.x.ai/)  
-3. Settings → Voice Assistants → edit your assistant → set Conversation agent to **Grok**  
-4. Expose entities under Voice Assistants → Expose  
+Setup probes your key against the Voice endpoints. If chat works but TTS/STT fail:
 
-Walkthrough: [blog post](https://braytonstafford.com/home-assistant-xai-grok-conversation-agent/)
+- In the [xAI console](https://console.x.ai/), ensure the key/team has **Voice** enabled
+- Check HA logs for `xAI Voice API not available for this key`
+- Conversation still loads; only TTS/STT need Voice permissions
 
 ---
 
@@ -67,123 +70,33 @@ Walkthrough: [blog post](https://braytonstafford.com/home-assistant-xai-grok-con
 
 | Option | Notes |
 | --- | --- |
-| Instructions | System prompt (template OK) |
-| LLM HASS API | Enable device control (not “No control”) |
-| Interaction mode | `tools` / `pipeline` / `chat_only` |
-| Live Search | `off` / `web` / `x` / `full` |
-| Show citations | Append source URLs after search answers |
-| Include username | Person entity name or HA user display name |
-| Location context | Free-text home location |
-| Voice-optimized | Concise Assist replies |
-| Home context | Time + presence + weather injection |
-| Auto model routing | Fast model for short commands |
-| Recommended toggle | Hide advanced model knobs |
-| Chat / Fast / Fallback models | e.g. `grok-4.3-latest`, `grok-4-1-fast-non-reasoning` |
-| Budget warning (USD) | `0` disables |
-
----
-
-## Services
-
-### `grok_conversation.ask`
-
-Stateless one-shot with optional live search — perfect for automations:
-
-```yaml
-service: grok_conversation.ask
-data:
-  config_entry: YOUR_ENTRY_ID
-  instructions: "Summarize for a spoken morning briefing in under 60 words."
-  input_data: >
-    Weather: {{ states('weather.home') }}
-    Temp: {{ state_attr('weather.home', 'temperature') }}
-  live_search: web
-  show_citations: false
-response_variable: grok_reply
-```
-
-### `grok_conversation.photo_analysis`
-
-```yaml
-service: grok_conversation.photo_analysis
-data:
-  config_entry: YOUR_ENTRY_ID
-  prompt: "Is anyone at the front door? Describe the scene."
-  images:
-    - /config/www/tmp/doorbell.jpg
-```
-
-### `grok_conversation.home_briefing`
-
-```yaml
-service: grok_conversation.home_briefing
-data:
-  config_entry: YOUR_ENTRY_ID
-  focus: "Security and climate only. Mention if anyone is home."
-```
-
-### Other services
-
-- `generate_image` / `generate_content` — creative + multimodal generation  
-- `query_image` — legacy alias of photo analysis  
-- `clear_memory` — reloads the integration agent  
-- `reset_stats` — zeroes usage sensors  
-
----
-
-## Sensors
-
-Per config entry (diagnostic):
-
-- `sensor.grok_*_total_tokens`
-- `sensor.grok_*_prompt_tokens`
-- `sensor.grok_*_completion_tokens`
-- `sensor.grok_*_api_requests`
-- `sensor.grok_*_estimated_cost`
-- `sensor.grok_*_last_model` (attributes include per-model / per-service breakdown)
-
-Events:
-
-- `grok_conversation_usage_updated`
-- `grok_conversation_budget_warning`
+| LLM HASS API | Assist control (not "No control") |
+| Enable xAI TTS / STT | Toggle engines (reload after change) |
+| Default TTS voice | Eve, Ara, Rex, Luna, … |
+| Default TTS language | `en`, `es-ES`, `pt-BR`, … |
+| TTS speed | 0.7–1.5 |
+| Default STT language | Formatting language for transcripts |
+| Live Search | off / web / x / full |
+| Interaction mode | tools / pipeline / chat_only |
 
 ---
 
 ## Troubleshooting
 
-**Tools / device control not working**
+**xAI Grok missing from STT/TTS dropdowns**
 
-1. Update to **1.6.2+** (earlier builds could drop real tool results and invent success)
-2. Options → **LLM HASS API** → select **Assist** / Home Assistant (not “No control”)
-3. Interaction mode must be `tools` or `pipeline` (not `chat_only`)
-4. Expose entities under Voice Assistants → Expose
-5. Enable debug logging:
+- Update to **1.7.0+**, restart HA
+- Integration → Configure → **Enable TTS** / **Enable STT** on
+- Confirm entities under Developer Tools → States (`tts.`, `stt.`)
 
-```yaml
-logger:
-  logs:
-    custom_components.grok_conversation: debug
-```
+**TTS/STT errors in logs**
 
-**Breaks official OpenAI integration**
+- Key must allow Voice (`/v1/tts`, `/v1/stt`)
+- Re-save the integration after enabling Voice on the key
 
-v1.6.2 pins `openai==2.45.0` to match Home Assistant core. Restart HA after updating so both integrations share the same package.
+**Tools / device control**
 
-**Live search not triggering**
-
-- Set Live Search to `web`, `x`, or `full`  
-- Search is used for chat-only turns, explicit search-y questions, and services that pass `live_search`  
-- When HA tools are active on a turn, Grok prioritizes local tool calling unless the query looks like a search
-
-**Slow replies**
-
-- Enable auto-routing + a fast model  
-- Lower `max_tokens`  
-- Use `grok-4-1-fast-non-reasoning` / `grok-3-mini-fast` for Assist
-
-**Entity “no longer provided” after HA upgrade**
-
-Delete the stale conversation entity, restart HA, re-add/reload Grok Conversation (1.5+ no longer calls removed `async_migrate_engine`).
+See 1.6.2 notes — real tool payloads + ToolInput fix. Set LLM HASS API to Assist and expose entities.
 
 ---
 
@@ -191,15 +104,14 @@ Delete the stale conversation entity, restart HA, re-add/reload Grok Conversatio
 
 ```text
 custom_components/grok_conversation/
-  __init__.py          # setup + services
-  api_helpers.py       # chat completions + Responses live search
-  conversation.py      # Assist agent
-  config_flow.py       # config / options
-  sensor.py            # usage sensors
-  usage.py             # persisted token accounting
-  const.py
-  services.yaml
-  manifest.json
+  __init__.py          # setup + services + platforms
+  conversation.py      # Assist conversation agent
+  tts.py               # TextToSpeechEntity → /v1/tts
+  stt.py               # SpeechToTextEntity → /v1/stt
+  voice_api.py         # HTTP client + Voice probe
+  voice_const.py       # voices + languages
+  config_flow.py
+  sensor.py / usage.py
 ```
 
 CI: Hassfest + HACS validation on push/PR/nightly.
@@ -208,12 +120,14 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 
 ## Version
 
-**1.6.2** — Issue sweep: always pass real tool results (fixes fake device control), pin `openai==2.45.0` so core OpenAI isn’t broken, smarter Assist LLM API selection, prefer final non-tool speech, stronger no-hallucination prompt.
+**1.7.0** — xAI Voice **TTS** + **STT** engines for Assist (shared API key, voice catalog, languages, Voice API probe).
 
-**1.6.1** — Fix Assist tool calls for HA 2026.8+ (`ToolInput` API) and script tools that use selectors (`llm.selector_serializer`).
+**1.6.2** — Issue sweep: real tool results, openai pin, Assist API UX.
 
-**1.6.0** — Live search, interaction modes, user/location/voice/home context, auto-routing, fallback model, usage sensors, ask/photo/home_briefing services, CI refresh.
+**1.6.1** — Tool calls on HA 2026.8+.
+
+**1.6.0** — Live search, modes, sensors, services.
 
 ## License / trademarks
 
-Unofficial Home Assistant custom integration. xAI / Grok are trademarks of xAI Corp. API use is subject to [xAI terms](https://x.ai/legal/).
+MIT. Unofficial. xAI / Grok are trademarks of xAI Corp. API use subject to [xAI terms](https://x.ai/legal/).

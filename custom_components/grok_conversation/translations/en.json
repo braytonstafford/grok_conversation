@@ -10,7 +10,7 @@
         "data": {
           "api_key": "API Key"
         },
-        "description": "Enter your xAI API key from the xAI console."
+        "description": "Enter your xAI API key from the xAI console. The same key powers Conversation, TTS, and STT (Voice API access is checked automatically)."
       }
     }
   },
@@ -36,7 +36,13 @@
           "voice_optimized": "Voice-optimized replies",
           "auto_model_routing": "Auto-route simple requests to fast model",
           "home_context": "Inject home context (time, presence, weather)",
-          "budget_warn_usd": "Budget warning threshold (USD, 0=off)"
+          "budget_warn_usd": "Budget warning threshold (USD, 0=off)",
+          "enable_tts": "Enable xAI Text-to-Speech engine",
+          "enable_stt": "Enable xAI Speech-to-Text engine",
+          "tts_voice": "Default TTS voice",
+          "tts_language": "Default TTS language",
+          "tts_speed": "TTS speed (0.7–1.5)",
+          "stt_language": "Default STT language"
         }
       }
     },

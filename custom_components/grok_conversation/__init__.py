@@ -27,6 +27,7 @@ from homeassistant.exceptions import (
     ServiceValidationError,
 )
 from homeassistant.helpers import config_validation as cv, selector
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.typing import ConfigType
 
@@ -68,8 +69,14 @@ from .const import (
     SERVICE_RESET_STATS,
 )
 from .usage import UsageTracker
+from .voice_api import async_validate_voice_access
 
-PLATFORMS = (Platform.CONVERSATION, Platform.SENSOR)
+PLATFORMS = (
+    Platform.CONVERSATION,
+    Platform.SENSOR,
+    Platform.TTS,
+    Platform.STT,
+)
 CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 OpenAIConfigEntry = ConfigEntry  # runtime_data: openai.AsyncClient
@@ -775,9 +782,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: OpenAIConfigEntry) -> bo
 
     tracker = UsageTracker(hass, entry.entry_id)
     await tracker.async_load()
+
+    # Probe Voice API (TTS/STT) — conversation still works if voice is denied
+    session = async_get_clientsession(hass)
+    voice_ok, voice_detail = await async_validate_voice_access(
+        session, entry.data[CONF_API_KEY]
+    )
+    if voice_ok:
+        LOGGER.info("xAI Voice API OK: %s", voice_detail)
+    else:
+        LOGGER.warning(
+            "xAI Voice API not available for this key — TTS/STT engines "
+            "may fail until voice is enabled on the key. Detail: %s",
+            voice_detail,
+        )
+
     hass.data.setdefault(DOMAIN, {})[entry.entry_id] = {
         "client": client,
         "usage": tracker,
+        "voice_ok": voice_ok,
+        "voice_detail": voice_detail,
     }
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)

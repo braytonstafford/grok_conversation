@@ -18,6 +18,7 @@ from homeassistant.config_entries import (
 from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers import llm
+from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.httpx_client import get_async_client
 from homeassistant.helpers.selector import (
     NumberSelector,
@@ -73,6 +74,24 @@ from .const import (
     RECOMMENDED_VOICE_OPTIMIZED,
     UNSUPPORTED_MODELS,
 )
+from .voice_const import (
+    CONF_ENABLE_STT,
+    CONF_ENABLE_TTS,
+    CONF_STT_LANGUAGE,
+    CONF_TTS_LANGUAGE,
+    CONF_TTS_SPEED,
+    CONF_TTS_VOICE,
+    RECOMMENDED_ENABLE_STT,
+    RECOMMENDED_ENABLE_TTS,
+    RECOMMENDED_STT_LANGUAGE,
+    RECOMMENDED_TTS_LANGUAGE,
+    RECOMMENDED_TTS_SPEED,
+    RECOMMENDED_TTS_VOICE,
+    STT_LANGUAGES,
+    TTS_LANGUAGES,
+    XAI_VOICES,
+)
+from .voice_api import async_validate_voice_access
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -92,11 +111,17 @@ RECOMMENDED_OPTIONS = {
     CONF_VOICE_OPTIMIZED: RECOMMENDED_VOICE_OPTIMIZED,
     CONF_AUTO_MODEL_ROUTING: RECOMMENDED_AUTO_MODEL_ROUTING,
     CONF_HOME_CONTEXT: RECOMMENDED_HOME_CONTEXT,
+    CONF_ENABLE_TTS: RECOMMENDED_ENABLE_TTS,
+    CONF_ENABLE_STT: RECOMMENDED_ENABLE_STT,
+    CONF_TTS_VOICE: RECOMMENDED_TTS_VOICE,
+    CONF_TTS_LANGUAGE: RECOMMENDED_TTS_LANGUAGE,
+    CONF_TTS_SPEED: RECOMMENDED_TTS_SPEED,
+    CONF_STT_LANGUAGE: RECOMMENDED_STT_LANGUAGE,
 }
 
 
-async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
-    """Validate the user input allows us to connect."""
+async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str, Any]:
+    """Validate the user input allows us to connect. Returns voice probe info."""
 
     def sync_validate():
         client = openai.AsyncOpenAI(
@@ -116,6 +141,12 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> None:
         _LOGGER.exception("Unexpected exception during validation")
         raise
 
+    session = async_get_clientsession(hass)
+    voice_ok, voice_detail = await async_validate_voice_access(
+        session, data[CONF_API_KEY]
+    )
+    return {"voice_ok": voice_ok, "voice_detail": voice_detail}
+
 
 class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Grok Conversation."""
@@ -132,9 +163,10 @@ class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
             )
 
         errors: dict[str, str] = {}
+        description_placeholders: dict[str, str] = {}
 
         try:
-            await validate_input(self.hass, user_input)
+            info = await validate_input(self.hass, user_input)
         except openai.APIConnectionError:
             errors["base"] = "cannot_connect"
         except openai.AuthenticationError:
@@ -142,14 +174,23 @@ class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
         except Exception:  # noqa: BLE001
             errors["base"] = "unknown"
         else:
+            if not info.get("voice_ok"):
+                _LOGGER.warning(
+                    "xAI key valid for chat but Voice API check failed: %s",
+                    info.get("voice_detail"),
+                )
+                # Still create — conversation works; TTS/STT may need key permissions
             return self.async_create_entry(
-                title="Grok",
+                title="xAI Grok",
                 data=user_input,
                 options=RECOMMENDED_OPTIONS,
             )
 
         return self.async_show_form(
-            step_id="user", data_schema=STEP_USER_DATA_SCHEMA, errors=errors
+            step_id="user",
+            data_schema=STEP_USER_DATA_SCHEMA,
+            errors=errors,
+            description_placeholders=description_placeholders,
         )
 
     @staticmethod
@@ -438,6 +479,80 @@ def openai_config_option_schema(
                 CONF_AUTO_MODEL_ROUTING, RECOMMENDED_AUTO_MODEL_ROUTING
             ),
         ): bool,
+        # --- Voice (TTS / STT for Assist pipelines) ---
+        vol.Optional(
+            CONF_ENABLE_TTS,
+            description={
+                "suggested_value": options.get(CONF_ENABLE_TTS, RECOMMENDED_ENABLE_TTS)
+            },
+            default=options.get(CONF_ENABLE_TTS, RECOMMENDED_ENABLE_TTS),
+        ): bool,
+        vol.Optional(
+            CONF_ENABLE_STT,
+            description={
+                "suggested_value": options.get(CONF_ENABLE_STT, RECOMMENDED_ENABLE_STT)
+            },
+            default=options.get(CONF_ENABLE_STT, RECOMMENDED_ENABLE_STT),
+        ): bool,
+        vol.Optional(
+            CONF_TTS_VOICE,
+            description={
+                "suggested_value": options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE)
+            },
+            default=options.get(CONF_TTS_VOICE, RECOMMENDED_TTS_VOICE),
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=vid, label=label)
+                    for vid, label in sorted(XAI_VOICES.items(), key=lambda x: x[1].lower())
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Optional(
+            CONF_TTS_LANGUAGE,
+            description={
+                "suggested_value": options.get(
+                    CONF_TTS_LANGUAGE, RECOMMENDED_TTS_LANGUAGE
+                )
+            },
+            default=options.get(CONF_TTS_LANGUAGE, RECOMMENDED_TTS_LANGUAGE),
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=code, label=code)
+                    for code in TTS_LANGUAGES
+                    if code != "auto"
+                ]
+                + [SelectOptionDict(value="auto", label="auto (detect)")],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        ),
+        vol.Optional(
+            CONF_TTS_SPEED,
+            description={
+                "suggested_value": options.get(CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED)
+            },
+            default=options.get(CONF_TTS_SPEED, RECOMMENDED_TTS_SPEED),
+        ): NumberSelector(
+            NumberSelectorConfig(min=0.7, max=1.5, step=0.05)
+        ),
+        vol.Optional(
+            CONF_STT_LANGUAGE,
+            description={
+                "suggested_value": options.get(
+                    CONF_STT_LANGUAGE, RECOMMENDED_STT_LANGUAGE
+                )
+            },
+            default=options.get(CONF_STT_LANGUAGE, RECOMMENDED_STT_LANGUAGE),
+        ): SelectSelector(
+            SelectSelectorConfig(
+                options=[
+                    SelectOptionDict(value=code, label=code) for code in STT_LANGUAGES
+                ],
+                mode=SelectSelectorMode.DROPDOWN,
+            )
+        ),
         vol.Required(
             CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
         ): bool,

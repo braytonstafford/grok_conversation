@@ -3,7 +3,9 @@
   "name": "xAI Grok Conversation",
   "after_dependencies": [
     "assist_pipeline",
-    "intent"
+    "intent",
+    "tts",
+    "stt"
   ],
   "codeowners": [
     "@braytonstafford"
@@ -24,5 +26,5 @@
   "requirements": [
     "openai==2.45.0"
   ],
-  "version": "1.6.2"
+  "version": "1.7.0"
 }
