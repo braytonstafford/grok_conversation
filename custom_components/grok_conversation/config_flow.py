@@ -74,6 +74,7 @@ from .const import (
     RECOMMENDED_VOICE_OPTIMIZED,
     UNSUPPORTED_MODELS,
 )
+from .api_helpers import async_list_chat_models, is_chat_model_id
 from .voice_const import (
     CONF_ENABLE_STT,
     CONF_ENABLE_TTS,
@@ -104,6 +105,9 @@ STEP_USER_DATA_SCHEMA = vol.Schema(
 RECOMMENDED_OPTIONS = {
     CONF_RECOMMENDED: True,
     CONF_PROMPT: GROK_SYSTEM_PROMPT,
+    CONF_CHAT_MODEL: RECOMMENDED_CHAT_MODEL,
+    CONF_FAST_MODEL: RECOMMENDED_FAST_MODEL,
+    CONF_FALLBACK_MODEL: RECOMMENDED_FALLBACK_MODEL,
     CONF_LIVE_SEARCH: RECOMMENDED_LIVE_SEARCH,
     CONF_SHOW_CITATIONS: RECOMMENDED_SHOW_CITATIONS,
     CONF_SEND_USER_NAME: RECOMMENDED_SEND_USER_NAME,
@@ -209,6 +213,39 @@ class OpenAIOptionsFlow(OptionsFlow):
         self.last_rendered_recommended = config_entry.options.get(
             CONF_RECOMMENDED, False
         )
+        self._chat_models: list[str] | None = None
+
+    async def _async_get_chat_models(self) -> list[str]:
+        """List chat models from xAI (cached per options flow session)."""
+        if self._chat_models is not None:
+            return self._chat_models
+
+        api_key = self.config_entry.data.get(CONF_API_KEY, "")
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://api.x.ai/v1",
+            http_client=get_async_client(self.hass),
+        )
+        models = await async_list_chat_models(client)
+
+        # Ensure currently configured models always appear even if filtered out
+        options = self.config_entry.options
+        for key, default in (
+            (CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
+            (CONF_FAST_MODEL, RECOMMENDED_FAST_MODEL),
+            (CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL),
+        ):
+            current = options.get(key, default)
+            if (
+                isinstance(current, str)
+                and current
+                and current not in models
+                and is_chat_model_id(current)
+            ):
+                models = [current, *models]
+
+        self._chat_models = models
+        return models
 
     async def async_step_init(
         self, user_input: dict[str, Any] | None = None
@@ -216,6 +253,7 @@ class OpenAIOptionsFlow(OptionsFlow):
         """Manage the options."""
         options: dict[str, Any] | MappingProxyType[str, Any] = self.config_entry.options
         errors: dict[str, str] = {}
+        chat_models = await self._async_get_chat_models()
 
         if user_input is not None:
             if user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
@@ -255,14 +293,8 @@ class OpenAIOptionsFlow(OptionsFlow):
                             resolved.append(by_name)
                             continue
                         # Common HA Assist aliases
-                        alias_map = {
-                            "assist": None,
-                            "home assistant": None,
-                            "homeassistant": None,
-                        }
                         key = str(api_id).strip().lower()
-                        if key in alias_map and available_apis:
-                            # Prefer API whose name/id contains assist/homeassistant
+                        if key in {"assist", "home assistant", "homeassistant"} and available_apis:
                             pick = next(
                                 (
                                     a.id
@@ -294,8 +326,6 @@ class OpenAIOptionsFlow(OptionsFlow):
                             if api_id not in available_api_ids
                         ]
                         if invalid_apis and available_api_ids:
-                            # Soft-fail: if Assist APIs exist, keep valid ones;
-                            # only error when nothing resolves.
                             api_list = [
                                 a for a in api_list if a in available_api_ids
                             ]
@@ -309,7 +339,6 @@ class OpenAIOptionsFlow(OptionsFlow):
                             else:
                                 user_input[CONF_LLM_HASS_API] = api_list
                         elif invalid_apis and not available_api_ids:
-                            # Conversation/LLM APIs not loaded yet — save selection anyway
                             _LOGGER.warning(
                                 "No LLM APIs registered yet; saving selection %s",
                                 api_list,
@@ -320,34 +349,30 @@ class OpenAIOptionsFlow(OptionsFlow):
                 else:
                     user_input.pop(CONF_LLM_HASS_API, None)
 
-                if user_input.get(CONF_CHAT_MODEL) in UNSUPPORTED_MODELS:
-                    errors[CONF_CHAT_MODEL] = "model_not_supported"
-                elif not errors:
+                # Validate model picks (allow custom values that look chat-capable)
+                for model_key in (CONF_CHAT_MODEL, CONF_FAST_MODEL, CONF_FALLBACK_MODEL):
+                    model_val = user_input.get(model_key)
+                    if not model_val:
+                        continue
+                    if model_val in UNSUPPORTED_MODELS or not is_chat_model_id(
+                        str(model_val)
+                    ):
+                        errors[model_key] = "model_not_supported"
+
+                if not errors:
                     return self.async_create_entry(title="", data=user_input)
             else:
+                # Recommended checkbox toggled — re-render form, keep other values
                 self.last_rendered_recommended = user_input[CONF_RECOMMENDED]
                 options = {
+                    **dict(options),
+                    **user_input,
                     CONF_RECOMMENDED: user_input[CONF_RECOMMENDED],
-                    CONF_PROMPT: user_input.get(CONF_PROMPT, options.get(CONF_PROMPT)),
-                    CONF_LLM_HASS_API: user_input.get(CONF_LLM_HASS_API),
-                    CONF_LIVE_SEARCH: user_input.get(
-                        CONF_LIVE_SEARCH, options.get(CONF_LIVE_SEARCH)
-                    ),
-                    CONF_INTERACTION_MODE: user_input.get(
-                        CONF_INTERACTION_MODE, options.get(CONF_INTERACTION_MODE)
-                    ),
-                    CONF_SEND_USER_NAME: user_input.get(
-                        CONF_SEND_USER_NAME, options.get(CONF_SEND_USER_NAME)
-                    ),
-                    CONF_VOICE_OPTIMIZED: user_input.get(
-                        CONF_VOICE_OPTIMIZED, options.get(CONF_VOICE_OPTIMIZED)
-                    ),
-                    CONF_HOME_CONTEXT: user_input.get(
-                        CONF_HOME_CONTEXT, options.get(CONF_HOME_CONTEXT)
-                    ),
                 }
 
-        schema = openai_config_option_schema(self.hass, options)
+        schema = openai_config_option_schema(
+            self.hass, options, chat_models=chat_models
+        )
         return self.async_show_form(
             step_id="init",
             data_schema=vol.Schema(schema),
@@ -355,11 +380,39 @@ class OpenAIOptionsFlow(OptionsFlow):
         )
 
 
+def _model_select(
+    models: list[str],
+    current: str | None,
+    default: str,
+) -> SelectSelector:
+    """Build a dropdown of live chat models; allow typing a custom id."""
+    opts = list(models)
+    cur = current or default
+    if cur and cur not in opts:
+        opts = [cur, *opts]
+    if default not in opts:
+        opts = [default, *opts]
+    return SelectSelector(
+        SelectSelectorConfig(
+            options=[SelectOptionDict(value=m, label=m) for m in opts],
+            mode=SelectSelectorMode.DROPDOWN,
+            custom_value=True,
+        )
+    )
+
+
 def openai_config_option_schema(
     hass: HomeAssistant,
     options: dict[str, Any] | MappingProxyType[str, Any],
+    chat_models: list[str] | None = None,
 ) -> VolDictType:
     """Return a schema for Grok completion options."""
+    models = chat_models or [
+        RECOMMENDED_CHAT_MODEL,
+        RECOMMENDED_FAST_MODEL,
+        RECOMMENDED_FALLBACK_MODEL,
+    ]
+
     hass_apis: list[SelectOptionDict] = [
         SelectOptionDict(
             label="No control",
@@ -388,6 +441,10 @@ def openai_config_option_schema(
         SelectOptionDict(value=MODE_CHAT_ONLY, label="Chat Only (no device control)"),
     ]
 
+    chat_default = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+    fast_default = options.get(CONF_FAST_MODEL, RECOMMENDED_FAST_MODEL)
+    fallback_default = options.get(CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL)
+
     schema: VolDictType = {
         vol.Optional(
             CONF_PROMPT,
@@ -395,6 +452,22 @@ def openai_config_option_schema(
                 "suggested_value": options.get(CONF_PROMPT, GROK_SYSTEM_PROMPT)
             },
         ): TemplateSelector(),
+        # --- Models (always visible; populated from live xAI /v1/models) ---
+        vol.Optional(
+            CONF_CHAT_MODEL,
+            description={"suggested_value": chat_default},
+            default=chat_default,
+        ): _model_select(models, chat_default, RECOMMENDED_CHAT_MODEL),
+        vol.Optional(
+            CONF_FAST_MODEL,
+            description={"suggested_value": fast_default},
+            default=fast_default,
+        ): _model_select(models, fast_default, RECOMMENDED_FAST_MODEL),
+        vol.Optional(
+            CONF_FALLBACK_MODEL,
+            description={"suggested_value": fallback_default},
+            default=fallback_default,
+        ): _model_select(models, fallback_default, RECOMMENDED_FALLBACK_MODEL),
         vol.Optional(
             CONF_LLM_HASS_API,
             description={"suggested_value": options.get(CONF_LLM_HASS_API)},
@@ -554,49 +627,37 @@ def openai_config_option_schema(
             )
         ),
         vol.Required(
-            CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, False)
+            CONF_RECOMMENDED, default=options.get(CONF_RECOMMENDED, True)
         ): bool,
     }
 
-    if options.get(CONF_RECOMMENDED):
+    # Advanced sampling params only when "Recommended model settings" is off
+    if options.get(CONF_RECOMMENDED, True):
         return schema
 
     schema.update(
         {
             vol.Optional(
-                CONF_CHAT_MODEL,
-                description={"suggested_value": options.get(CONF_CHAT_MODEL)},
-                default=RECOMMENDED_CHAT_MODEL,
-            ): str,
-            vol.Optional(
-                CONF_FAST_MODEL,
-                description={"suggested_value": options.get(CONF_FAST_MODEL)},
-                default=RECOMMENDED_FAST_MODEL,
-            ): str,
-            vol.Optional(
-                CONF_FALLBACK_MODEL,
-                description={"suggested_value": options.get(CONF_FALLBACK_MODEL)},
-                default=RECOMMENDED_FALLBACK_MODEL,
-            ): str,
-            vol.Optional(
                 CONF_MAX_TOKENS,
                 description={"suggested_value": options.get(CONF_MAX_TOKENS)},
-                default=RECOMMENDED_MAX_TOKENS,
+                default=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
             ): int,
             vol.Optional(
                 CONF_TOP_P,
                 description={"suggested_value": options.get(CONF_TOP_P)},
-                default=RECOMMENDED_TOP_P,
+                default=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
             ): NumberSelector(NumberSelectorConfig(min=0, max=1, step=0.05)),
             vol.Optional(
                 CONF_TEMPERATURE,
                 description={"suggested_value": options.get(CONF_TEMPERATURE)},
-                default=RECOMMENDED_TEMPERATURE,
+                default=options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
             ): NumberSelector(NumberSelectorConfig(min=0, max=2, step=0.05)),
             vol.Optional(
                 CONF_REASONING_EFFORT,
                 description={"suggested_value": options.get(CONF_REASONING_EFFORT)},
-                default=RECOMMENDED_REASONING_EFFORT,
+                default=options.get(
+                    CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
+                ),
             ): SelectSelector(
                 SelectSelectorConfig(
                     options=[

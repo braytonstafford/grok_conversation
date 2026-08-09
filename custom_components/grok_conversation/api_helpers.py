@@ -12,7 +12,111 @@ from .const import (
     LIVE_SEARCH_WEB,
     LIVE_SEARCH_X,
     LOGGER,
+    RECOMMENDED_CHAT_MODEL,
+    RECOMMENDED_FALLBACK_MODEL,
+    RECOMMENDED_FAST_MODEL,
 )
+
+# Substrings that mark non-chat models returned by GET /v1/models
+_NON_CHAT_MODEL_MARKERS: tuple[str, ...] = (
+    "imagine",
+    "image",
+    "video",
+    "tts",
+    "stt",
+    "voice",
+    "embedding",
+    "embed",
+    "whisper",
+    "moderation",
+    "realtime",
+    "audio",
+    "speech",
+)
+
+# Known-good fallbacks if the models API is unreachable
+_FALLBACK_CHAT_MODELS: tuple[str, ...] = (
+    RECOMMENDED_CHAT_MODEL,
+    "grok-4.5",
+    "grok-4.5-latest",
+    "grok-4-latest",
+    "grok-4",
+    "grok-4-1-fast-non-reasoning",
+    "grok-4-1-fast-reasoning",
+    "grok-3-mini-fast",
+    "grok-3-mini",
+    "grok-3",
+    "grok-2-latest",
+    RECOMMENDED_FAST_MODEL,
+    RECOMMENDED_FALLBACK_MODEL,
+)
+
+
+def is_chat_model_id(model_id: str) -> bool:
+    """Return True if model_id looks like a text/chat LLM (not image/voice/etc.)."""
+    mid = (model_id or "").strip().lower()
+    if not mid:
+        return False
+    if any(marker in mid for marker in _NON_CHAT_MODEL_MARKERS):
+        return False
+    # xAI chat models are grok-* (and occasionally bare aliases)
+    if mid.startswith("grok"):
+        return True
+    # Allow unknown future text models that don't match exclude list
+    # but skip obvious non-ids
+    if mid.startswith(("ft:", "text-", "code-")):
+        return True
+    return False
+
+
+def filter_chat_model_ids(model_ids: list[str]) -> list[str]:
+    """Filter + de-dupe + sort chat-capable model ids."""
+    seen: set[str] = set()
+    out: list[str] = []
+    for mid in model_ids:
+        if not isinstance(mid, str):
+            continue
+        name = mid.strip()
+        if not name or name in seen or not is_chat_model_id(name):
+            continue
+        seen.add(name)
+        out.append(name)
+
+    def _sort_key(name: str) -> tuple:
+        # Prefer "latest" / higher major versions first-ish, then alpha
+        lower = name.lower()
+        latest = 0 if "latest" in lower else 1
+        return (latest, lower)
+
+    out.sort(key=_sort_key)
+    return out
+
+
+async def async_list_chat_models(client: openai.AsyncClient) -> list[str]:
+    """Fetch chat-capable model ids from xAI GET /v1/models.
+
+    Filters out image/video/voice/embedding models. Falls back to a static
+    known list if the API call fails so Options still works offline.
+    """
+    try:
+        page = await client.models.list()
+        raw_ids: list[str] = []
+        data = getattr(page, "data", None) or page
+        for item in data:
+            mid = getattr(item, "id", None)
+            if mid is None and isinstance(item, dict):
+                mid = item.get("id")
+            if mid:
+                raw_ids.append(str(mid))
+        models = filter_chat_model_ids(raw_ids)
+        if models:
+            LOGGER.debug("xAI chat models: %s", models)
+            return models
+        LOGGER.warning("xAI models list returned no chat models; using fallbacks")
+    except Exception as err:  # noqa: BLE001
+        LOGGER.warning("Could not list xAI models (%s); using fallbacks", err)
+
+    return filter_chat_model_ids(list(_FALLBACK_CHAT_MODELS))
 
 
 def build_live_search_tools(live_search: str) -> list[dict[str, Any]]:

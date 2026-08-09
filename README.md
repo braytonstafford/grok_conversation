@@ -72,6 +72,9 @@ Setup probes your key against the Voice endpoints. If chat works but TTS/STT fai
 | --- | --- |
 | LLM HASS API | Assist control (not "No control") |
 | Enable xAI TTS / STT | Toggle engines (reload after change) |
+| **Chat model** | Primary model — live list from xAI API |
+| **Fast model** | Used by auto-routing for short commands |
+| **Fallback model** | Tried if the primary errors |
 | Default TTS voice | Eve, Ara, Rex, Luna, … |
 | Default TTS language | `en`, `es-ES`, `pt-BR`, … |
 | TTS speed | 0.7–1.5 |
@@ -119,6 +122,8 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 ---
 
 ## Version
+
+**1.7.4** — Always-visible model pickers (chat / fast / fallback) loaded live from xAI `/v1/models` (non-chat models filtered).
 
 **1.7.3** — Merge all anyOf object-branch properties for timer tools (#25, thanks @CodyJon).
 
