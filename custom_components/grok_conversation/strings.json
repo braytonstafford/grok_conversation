@@ -55,7 +55,7 @@
     },
     "error": {
       "model_not_supported": "This model is not supported, please select a different model",
-      "llm_api_not_found": "The selected LLM HASS API is not available. Please ensure the integration is installed and configured."
+      "llm_api_not_found": "Could not match that LLM HASS API. Pick “Assist” / Home Assistant from the list (not a free-text value), or leave No control for chat-only."
     }
   },
   "services": {

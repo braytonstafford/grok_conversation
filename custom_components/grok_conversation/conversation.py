@@ -391,28 +391,34 @@ class OpenAIConversationEntity(
             )
 
     def _is_tool_result_helpful(self, tool_name: str, tool_result: Any) -> bool:
-        """Determine if a tool result is helpful for the conversation."""
-        if isinstance(tool_result, dict):
-            if "error" in tool_result:
-                return False
-            speech = (
-                tool_result.get("speech", {}).get("plain", {}).get("speech", "")
-            )
-            if speech in ["Not any", "No information available", ""] or not speech:
-                return False
-            speech_lower = speech.lower()
-            if any(
-                phrase in speech_lower
-                for phrase in [
-                    "not found",
-                    "no data",
-                    "unavailable",
-                    "not available",
-                    "not any",
-                ]
-            ):
-                return False
+        """Legacy helper — kept for compatibility; always prefer real payloads."""
         return True
+
+    @staticmethod
+    def _tool_result_payload(tool_result: Any) -> str:
+        """Serialize tool results for the model. Always pass through real data."""
+        try:
+            return json.dumps(tool_result, default=str)
+        except TypeError:
+            return json.dumps({"result": str(tool_result)})
+
+    @staticmethod
+    def _pick_speech_content(chat_log: conversation.ChatLog) -> str | None:
+        """Prefer the last assistant message that is not a tool-call turn."""
+        fallback: str | None = None
+        for content in reversed(chat_log.content):
+            if not isinstance(content, conversation.AssistantContent):
+                continue
+            text = (content.content or "").strip()
+            if not text:
+                continue
+            # Skip intermediate tool-call turns (often OOC / "calling tool…")
+            if getattr(content, "tool_calls", None):
+                if fallback is None:
+                    fallback = text
+                continue
+            return text
+        return fallback
 
     def _build_extra_system_prompt(
         self, user_input: conversation.ConversationInput
@@ -774,10 +780,24 @@ class OpenAIConversationEntity(
                 for tool_call in message.tool_calls:
                     try:
                         tool_name = tool_call.function.name
-                        tool_args = json.loads(tool_call.function.arguments)
+                        try:
+                            tool_args = json.loads(tool_call.function.arguments or "{}")
+                        except json.JSONDecodeError as err:
+                            tool_result = {
+                                "error": f"Invalid tool arguments JSON: {err}",
+                                "raw_arguments": tool_call.function.arguments,
+                            }
+                            messages.append(
+                                {
+                                    "role": "tool",
+                                    "tool_call_id": tool_call.id,
+                                    "content": self._tool_result_payload(tool_result),
+                                }
+                            )
+                            continue
                         if not chat_log.llm_api:
-                            tool_result: Any = {
-                                "error": "LLM HASS API not configured"
+                            tool_result = {
+                                "error": "LLM HASS API not configured. Enable Home Assistant LLM API / Assist control in Grok Conversation options."
                             }
                         else:
                             tool = next(
@@ -804,37 +824,35 @@ class OpenAIConversationEntity(
                                     tool_input,
                                     user_input.as_llm_context(DOMAIN),
                                 )
-                        if self._is_tool_result_helpful(tool_name, tool_result):
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call.id,
-                                    "content": json.dumps(tool_result),
-                                }
-                            )
-                        else:
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call.id,
-                                    "content": json.dumps(
-                                        {
-                                            "note": "Tool returned no useful data; answer from knowledge if possible."
-                                        }
-                                    ),
-                                }
-                            )
+                                LOGGER.debug(
+                                    "Tool %s result: %s", tool_name, tool_result
+                                )
+                        # Always return the real tool payload. Filtering "unhelpful"
+                        # results caused the model to invent successful actions (#8/#16).
+                        messages.append(
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call.id,
+                                "content": self._tool_result_payload(tool_result),
+                            }
+                        )
                     except Exception as err:  # noqa: BLE001
                         LOGGER.error(
                             "Error executing tool %s: %s",
                             tool_call.function.name,
                             err,
+                            exc_info=True,
                         )
                         messages.append(
                             {
                                 "role": "tool",
                                 "tool_call_id": tool_call.id,
-                                "content": json.dumps({"error": str(err)}),
+                                "content": self._tool_result_payload(
+                                    {
+                                        "error": str(err),
+                                        "tool": tool_call.function.name,
+                                    }
+                                ),
                             }
                         )
 
@@ -869,13 +887,9 @@ class OpenAIConversationEntity(
             break
 
         intent_response = intent.IntentResponse(language=user_input.language)
-        last_assistant_content = None
-        for content in reversed(chat_log.content):
-            if isinstance(content, conversation.AssistantContent):
-                last_assistant_content = content
-                break
-        if last_assistant_content and last_assistant_content.content:
-            intent_response.async_set_speech(last_assistant_content.content)
+        speech = self._pick_speech_content(chat_log)
+        if speech:
+            intent_response.async_set_speech(speech)
         else:
             intent_response.async_set_speech(
                 "Sorry, I couldn't generate a response."

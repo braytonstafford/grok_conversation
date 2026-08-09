@@ -153,16 +153,21 @@ Events:
 
 **Tools / device control not working**
 
-1. Options → LLM HASS API must not be “No control”  
-2. Expose the entities under Voice Assistants  
-3. Interaction mode must not be `chat_only`  
-4. Enable debug logging:
+1. Update to **1.6.2+** (earlier builds could drop real tool results and invent success)
+2. Options → **LLM HASS API** → select **Assist** / Home Assistant (not “No control”)
+3. Interaction mode must be `tools` or `pipeline` (not `chat_only`)
+4. Expose entities under Voice Assistants → Expose
+5. Enable debug logging:
 
 ```yaml
 logger:
   logs:
     custom_components.grok_conversation: debug
 ```
+
+**Breaks official OpenAI integration**
+
+v1.6.2 pins `openai==2.45.0` to match Home Assistant core. Restart HA after updating so both integrations share the same package.
 
 **Live search not triggering**
 
@@ -175,6 +180,10 @@ logger:
 - Enable auto-routing + a fast model  
 - Lower `max_tokens`  
 - Use `grok-4-1-fast-non-reasoning` / `grok-3-mini-fast` for Assist
+
+**Entity “no longer provided” after HA upgrade**
+
+Delete the stale conversation entity, restart HA, re-add/reload Grok Conversation (1.5+ no longer calls removed `async_migrate_engine`).
 
 ---
 
@@ -198,6 +207,8 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 ---
 
 ## Version
+
+**1.6.2** — Issue sweep: always pass real tool results (fixes fake device control), pin `openai==2.45.0` so core OpenAI isn’t broken, smarter Assist LLM API selection, prefer final non-tool speech, stronger no-hallucination prompt.
 
 **1.6.1** — Fix Assist tool calls for HA 2026.8+ (`ToolInput` API) and script tools that use selectors (`llm.selector_serializer`).
 

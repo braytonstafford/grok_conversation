@@ -181,11 +181,17 @@ class OpenAIOptionsFlow(OptionsFlow):
                 llm_hass_api = user_input.get(CONF_LLM_HASS_API)
                 if llm_hass_api:
                     try:
-                        available_apis = llm.async_get_apis(self.hass)
+                        available_apis = list(llm.async_get_apis(self.hass))
                         available_api_ids = {api.id for api in available_apis}
+                        available_by_name = {
+                            (api.name or "").strip().lower(): api.id
+                            for api in available_apis
+                        }
                     except Exception as err:  # noqa: BLE001
                         _LOGGER.error("Error getting available LLM APIs: %s", err)
+                        available_apis = []
                         available_api_ids = set()
+                        available_by_name = {}
 
                     if isinstance(llm_hass_api, str):
                         api_list = [llm_hass_api]
@@ -197,6 +203,47 @@ class OpenAIOptionsFlow(OptionsFlow):
                     if "none" in api_list:
                         api_list.remove("none")
 
+                    # Resolve common aliases / display names → API ids
+                    resolved: list[str] = []
+                    for api_id in api_list:
+                        if api_id in available_api_ids:
+                            resolved.append(api_id)
+                            continue
+                        by_name = available_by_name.get(str(api_id).strip().lower())
+                        if by_name:
+                            resolved.append(by_name)
+                            continue
+                        # Common HA Assist aliases
+                        alias_map = {
+                            "assist": None,
+                            "home assistant": None,
+                            "homeassistant": None,
+                        }
+                        key = str(api_id).strip().lower()
+                        if key in alias_map and available_apis:
+                            # Prefer API whose name/id contains assist/homeassistant
+                            pick = next(
+                                (
+                                    a.id
+                                    for a in available_apis
+                                    if "assist" in a.id.lower()
+                                    or "assist" in (a.name or "").lower()
+                                    or a.id == "homeassistant"
+                                ),
+                                available_apis[0].id,
+                            )
+                            resolved.append(pick)
+                            continue
+                        resolved.append(api_id)
+
+                    # Dedupe preserve order
+                    seen: set[str] = set()
+                    api_list = []
+                    for a in resolved:
+                        if a not in seen:
+                            seen.add(a)
+                            api_list.append(a)
+
                     if not api_list:
                         user_input.pop(CONF_LLM_HASS_API, None)
                     else:
@@ -205,8 +252,28 @@ class OpenAIOptionsFlow(OptionsFlow):
                             for api_id in api_list
                             if api_id not in available_api_ids
                         ]
-                        if invalid_apis:
-                            errors[CONF_LLM_HASS_API] = "llm_api_not_found"
+                        if invalid_apis and available_api_ids:
+                            # Soft-fail: if Assist APIs exist, keep valid ones;
+                            # only error when nothing resolves.
+                            api_list = [
+                                a for a in api_list if a in available_api_ids
+                            ]
+                            if not api_list:
+                                errors[CONF_LLM_HASS_API] = "llm_api_not_found"
+                                _LOGGER.warning(
+                                    "LLM API(s) not found: %s. Available: %s",
+                                    invalid_apis,
+                                    available_api_ids,
+                                )
+                            else:
+                                user_input[CONF_LLM_HASS_API] = api_list
+                        elif invalid_apis and not available_api_ids:
+                            # Conversation/LLM APIs not loaded yet — save selection anyway
+                            _LOGGER.warning(
+                                "No LLM APIs registered yet; saving selection %s",
+                                api_list,
+                            )
+                            user_input[CONF_LLM_HASS_API] = api_list
                         else:
                             user_input[CONF_LLM_HASS_API] = api_list
                 else:
