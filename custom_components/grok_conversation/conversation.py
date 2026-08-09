@@ -102,19 +102,130 @@ async def async_setup_entry(
     async_add_entities([agent])
 
 
+def _sanitize_tool_schema(schema: Any) -> dict[str, Any]:
+    """Normalize tool JSON schema for xAI function calling.
+
+    xAI rejects roots that are anyOf/oneOf unions (e.g. HA HassStartTimer).
+    Keep an object-shaped schema with properties whenever possible.
+    """
+    if not isinstance(schema, dict):
+        return {
+            "type": "object",
+            "properties": {},
+            "additionalProperties": True,
+        }
+
+    def _pick_object_branch(branches: list[Any]) -> dict[str, Any] | None:
+        objectish: list[dict[str, Any]] = []
+        for branch in branches:
+            if not isinstance(branch, dict):
+                continue
+            if branch.get("type") == "object" or "properties" in branch:
+                objectish.append(branch)
+        return objectish[0] if objectish else None
+
+    def _clean(node: Any) -> Any:
+        if not isinstance(node, dict):
+            return node
+        node = dict(node)
+
+        # Collapse union keys to a single object-compatible schema
+        for union_key in ("anyOf", "oneOf", "allOf"):
+            if union_key not in node or not isinstance(node[union_key], list):
+                continue
+            branches = node[union_key]
+            chosen = _pick_object_branch(branches)
+            if chosen is None and branches:
+                # Fall back to first dict branch
+                chosen = next((b for b in branches if isinstance(b, dict)), None)
+            rest = {k: v for k, v in node.items() if k != union_key}
+            if isinstance(chosen, dict):
+                node = {**chosen, **rest}
+            else:
+                node = rest
+            break
+
+        # Normalize type lists that include object
+        t = node.get("type")
+        if isinstance(t, list):
+            if "object" in t:
+                node["type"] = "object"
+            elif "array" in t:
+                node["type"] = "array"
+            elif t:
+                node["type"] = t[0]
+
+        if "properties" in node and isinstance(node["properties"], dict):
+            node["properties"] = {
+                key: _clean(value) for key, value in node["properties"].items()
+            }
+        if "items" in node:
+            node["items"] = _clean(node["items"])
+        if "additionalProperties" in node and isinstance(
+            node["additionalProperties"], dict
+        ):
+            node["additionalProperties"] = _clean(node["additionalProperties"])
+
+        # Drop nested unsupported combinators left behind
+        for bad in ("not",):
+            node.pop(bad, None)
+
+        return node
+
+    cleaned = _clean(schema)
+
+    # Root must be an object for xAI
+    if not isinstance(cleaned, dict):
+        cleaned = {}
+    if cleaned.get("type") != "object" and "properties" not in cleaned:
+        # Non-object root (string/number/etc.) — wrap
+        cleaned = {
+            "type": "object",
+            "properties": {"value": cleaned} if cleaned else {},
+            "additionalProperties": True,
+        }
+    cleaned.setdefault("type", "object")
+    if cleaned["type"] != "object":
+        cleaned = {
+            "type": "object",
+            "properties": {"value": cleaned},
+            "additionalProperties": True,
+        }
+    cleaned.setdefault("properties", {})
+    if not isinstance(cleaned["properties"], dict):
+        cleaned["properties"] = {}
+
+    # Strip root-level keys xAI/OpenAI often reject as schema root
+    for bad in ("oneOf", "anyOf", "allOf", "not", "enum"):
+        cleaned.pop(bad, None)
+
+    return cleaned
+
+
 def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
 ) -> dict[str, Any]:
-    """Format tool specification for OpenAI API."""
+    """Format tool specification for xAI / OpenAI-compatible function calling."""
     # HA scripts/tools with selector: fields need llm.selector_serializer so
     # voluptuous_openapi.convert() does not try to use TextSelector as a dict key.
     serializer = custom_serializer or llm.selector_serializer
+    try:
+        raw_schema = convert(tool.parameters, custom_serializer=serializer)
+    except Exception as err:  # noqa: BLE001
+        LOGGER.warning(
+            "Failed to convert schema for tool %s (%s); using empty object schema",
+            tool.name,
+            err,
+        )
+        raw_schema = {"type": "object", "properties": {}}
+
+    schema = _sanitize_tool_schema(raw_schema)
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description or "",
-            "parameters": convert(tool.parameters, custom_serializer=serializer),
+            "parameters": schema,
         },
     }
 
@@ -717,10 +828,20 @@ class OpenAIConversationEntity(
         for _iteration in range(MAX_TOOL_ITERATIONS):
             tools: list[dict[str, Any]] | None = None
             if chat_log.llm_api:
-                tools = [
-                    _format_tool(tool, chat_log.llm_api.custom_serializer)
-                    for tool in chat_log.llm_api.tools
-                ]
+                tools = []
+                for tool in chat_log.llm_api.tools:
+                    try:
+                        tools.append(
+                            _format_tool(tool, chat_log.llm_api.custom_serializer)
+                        )
+                    except Exception as err:  # noqa: BLE001
+                        LOGGER.warning(
+                            "Skipping tool %s due to schema error: %s",
+                            getattr(tool, "name", "?"),
+                            err,
+                        )
+                if not tools:
+                    tools = None
 
             try:
                 result = await async_chat_completion(
