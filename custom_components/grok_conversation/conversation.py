@@ -106,12 +106,15 @@ def _format_tool(
     tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
 ) -> dict[str, Any]:
     """Format tool specification for OpenAI API."""
+    # HA scripts/tools with selector: fields need llm.selector_serializer so
+    # voluptuous_openapi.convert() does not try to use TextSelector as a dict key.
+    serializer = custom_serializer or llm.selector_serializer
     return {
         "type": "function",
         "function": {
             "name": tool.name,
             "description": tool.description or "",
-            "parameters": convert(tool.parameters, custom_serializer=custom_serializer),
+            "parameters": convert(tool.parameters, custom_serializer=serializer),
         },
     }
 
@@ -709,7 +712,8 @@ class OpenAIConversationEntity(
             tools: list[dict[str, Any]] | None = None
             if chat_log.llm_api:
                 tools = [
-                    _format_tool(tool, None) for tool in chat_log.llm_api.tools
+                    _format_tool(tool, chat_log.llm_api.custom_serializer)
+                    for tool in chat_log.llm_api.tools
                 ]
 
             try:
@@ -789,14 +793,11 @@ class OpenAIConversationEntity(
                                     "error": f"Tool {tool_name} not found"
                                 }
                             else:
+                                # ToolInput only accepts tool_name/tool_args;
+                                # context/user/device live on LLMContext (as_llm_context).
                                 tool_input = ToolInput(
                                     tool_name=tool_name,
                                     tool_args=tool_args,
-                                    context=user_input.context,
-                                    user_prompt=user_input.text,
-                                    language=user_input.language,
-                                    assistant="conversation",
-                                    device_id=user_input.device_id,
                                 )
                                 tool_result = await tool.async_call(
                                     self.hass,

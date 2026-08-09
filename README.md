@@ -199,6 +199,8 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 
 ## Version
 
+**1.6.1** — Fix Assist tool calls for HA 2026.8+ (`ToolInput` API) and script tools that use selectors (`llm.selector_serializer`).
+
 **1.6.0** — Live search, interaction modes, user/location/voice/home context, auto-routing, fallback model, usage sensors, ask/photo/home_briefing services, CI refresh.
 
 ## License / trademarks
