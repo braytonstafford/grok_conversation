@@ -19,7 +19,7 @@
       "init": {
         "data": {
           "prompt": "Instructions",
-          "chat_model": "Chat model",
+          "chat_model": "Primary chat model",
           "fast_model": "Fast model (auto-routing)",
           "fallback_model": "Fallback model",
           "max_tokens": "Maximum tokens to return in response",
@@ -27,7 +27,7 @@
           "top_p": "Top P",
           "reasoning_effort": "Reasoning effort",
           "llm_hass_api": "Home Assistant LLM API",
-          "recommended": "Recommended model settings",
+          "recommended": "Use recommended sampling settings",
           "live_search": "Live Search (Web / X)",
           "show_citations": "Show search citations",
           "send_user_name": "Include username in messages",
