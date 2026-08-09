@@ -63,10 +63,11 @@ async def async_setup_entry(
 
 
 class XAIGrokTTSEntity(TextToSpeechEntity):
-    """xAI Grok TTS engine (appears in Assist → Text-to-speech)."""
+    """xAI TTS engine (appears in Assist → Text-to-speech)."""
 
-    _attr_has_entity_name = True
-    _attr_name = "xAI Grok"
+    # Standalone name — avoid "Grok xAI Grok" from device + entity name concat
+    _attr_has_entity_name = False
+    _attr_name = "xAI TTS"
     _attr_supported_options = [ATTR_VOICE]
 
     def __init__(
@@ -79,7 +80,7 @@ class XAIGrokTTSEntity(TextToSpeechEntity):
             identifiers={(DOMAIN, config_entry.entry_id)},
             name=config_entry.title or "xAI Grok",
             manufacturer="xAI",
-            model="Grok Voice TTS",
+            model="xAI Voice TTS",
             entry_type=DeviceEntryType.SERVICE,
         )
         # Assist language dropdown

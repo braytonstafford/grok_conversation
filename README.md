@@ -120,6 +120,8 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 
 ## Version
 
+**1.7.1** — Fix STT crash (`SAMPLERATE_22050` → valid HA rates); rename engines to **xAI TTS** / **xAI STT**.
+
 **1.7.0** — xAI Voice **TTS** + **STT** engines for Assist (shared API key, voice catalog, languages, Voice API probe).
 
 **1.6.2** — Issue sweep: real tool results, openai pin, Assist API UX.

@@ -48,10 +48,11 @@ async def async_setup_entry(
 
 
 class XAIGrokSTTEntity(SpeechToTextEntity):
-    """xAI Grok STT engine (appears in Assist → Speech-to-text)."""
+    """xAI STT engine (appears in Assist → Speech-to-text)."""
 
-    _attr_has_entity_name = True
-    _attr_name = "xAI Grok"
+    # Standalone name — avoid "Grok xAI Grok" from device + entity name concat
+    _attr_has_entity_name = False
+    _attr_name = "xAI STT"
 
     def __init__(self, config_entry: ConfigEntry) -> None:
         self._entry = config_entry
@@ -60,7 +61,7 @@ class XAIGrokSTTEntity(SpeechToTextEntity):
             identifiers={(DOMAIN, config_entry.entry_id)},
             name=config_entry.title or "xAI Grok",
             manufacturer="xAI",
-            model="Grok Voice STT",
+            model="xAI Voice STT",
             entry_type=DeviceEntryType.SERVICE,
         )
 
@@ -83,9 +84,11 @@ class XAIGrokSTTEntity(SpeechToTextEntity):
 
     @property
     def supported_sample_rates(self) -> list[AudioSampleRates]:
+        # Must match homeassistant.components.stt.AudioSampleRates exactly
         return [
+            AudioSampleRates.SAMPLERATE_8000,
             AudioSampleRates.SAMPLERATE_16000,
-            AudioSampleRates.SAMPLERATE_22050,
+            AudioSampleRates.SAMPLERATE_22000,
             AudioSampleRates.SAMPLERATE_44100,
             AudioSampleRates.SAMPLERATE_48000,
         ]
