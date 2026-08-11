@@ -756,52 +756,110 @@ class OpenAIConversationEntity(
         live_search = options.get(CONF_LIVE_SEARCH, RECOMMENDED_LIVE_SEARCH)
         show_citations = options.get(CONF_SHOW_CITATIONS, RECOMMENDED_SHOW_CITATIONS)
 
-        # Prefer Responses API when live search is needed and no HA tools this turn
-        use_search = live_search and live_search != LIVE_SEARCH_OFF and (
-            looks_like_search_query(user_input.text) or mode == MODE_CHAT_ONLY
+        # Live search via Responses API. Previously this was skipped whenever HA
+        # tools were present (#26), which made Live Search a no-op for Assist users.
+        use_search = bool(
+            live_search
+            and live_search != LIVE_SEARCH_OFF
+            and (
+                looks_like_search_query(user_input.text)
+                or mode == MODE_CHAT_ONLY
+            )
         )
         ha_tools_available = bool(chat_log.llm_api and chat_log.llm_api.tools)
 
-        if use_search and not ha_tools_available:
+        if use_search:
+            search_system = [
+                "You have live web/X search. Answer with current facts only.",
+                "Be concise. Prefer scores, times, and concrete outcomes.",
+                "If results are uncertain, say what you found and what is unknown.",
+            ]
+            if options.get(CONF_PROMPT):
+                search_system.append(str(options.get(CONF_PROMPT)))
+            if combined_extra and not ha_tools_available:
+                # Full persona only on search-only path; tool path keeps HA prompt
+                search_system.append(combined_extra)
+
+            search_messages = [
+                m for m in messages if m.get("role") != "system"
+            ]
             try:
-                system_bits = []
-                if options.get(CONF_PROMPT):
-                    system_bits.append(str(options.get(CONF_PROMPT)))
-                if combined_extra:
-                    system_bits.append(combined_extra)
                 text, p_tok, c_tok = await async_responses_completion(
                     client,
                     model=model,
-                    messages=[m for m in messages if m.get("role") != "system"],  # type: ignore[arg-type]
-                    system_prompt="\n\n".join(system_bits) or None,
+                    messages=search_messages,  # type: ignore[arg-type]
+                    system_prompt="\n\n".join(search_system) or None,
                     max_tokens=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
-                    temperature=options.get(CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE),
+                    temperature=options.get(
+                        CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
+                    ),
                     top_p=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                     live_search=live_search,
                     show_citations=bool(show_citations),
                     reasoning_effort=options.get(CONF_REASONING_EFFORT),
                 )
                 text = _strip_json_from_response(text)
-                if text:
+                await self._record_usage(model, p_tok, c_tok)
+
+                if text and not ha_tools_available:
+                    # Search-only path (chat_only or no LLM HASS API)
                     async for _ in chat_log.async_add_assistant_content(
                         conversation.AssistantContent(
                             agent_id=user_input.agent_id, content=text
                         )
                     ):
                         pass
-                await self._record_usage(model, p_tok, c_tok)
-                intent_response = intent.IntentResponse(language=user_input.language)
-                intent_response.async_set_speech(
-                    text or "Sorry, I couldn't generate a response."
-                )
-                return conversation.ConversationResult(
-                    response=intent_response,
-                    conversation_id=chat_log.conversation_id,
-                    continue_conversation=chat_log.continue_conversation,
-                )
+                    intent_response = intent.IntentResponse(
+                        language=user_input.language
+                    )
+                    intent_response.async_set_speech(text)
+                    return conversation.ConversationResult(
+                        response=intent_response,
+                        conversation_id=chat_log.conversation_id,
+                        continue_conversation=chat_log.continue_conversation,
+                    )
+
+                if text and ha_tools_available:
+                    # Two-pass (#26): inject live findings into the tool loop so
+                    # Assist control and live search work together.
+                    brief = text.strip()
+                    if len(brief) > 4000:
+                        brief = brief[:4000] + "…"
+                    search_note = (
+                        "Live search results for this user question "
+                        "(use these facts; do not claim you lack real-time data):\n"
+                        f"{brief}"
+                    )
+                    new_messages: list[dict[str, Any]] = []
+                    inserted = False
+                    for msg in messages:
+                        if (
+                            not inserted
+                            and isinstance(msg, dict)
+                            and msg.get("role") == "system"
+                            and isinstance(msg.get("content"), str)
+                        ):
+                            new_messages.append(
+                                {
+                                    "role": "system",
+                                    "content": f"{msg['content']}\n\n{search_note}",
+                                }
+                            )
+                            inserted = True
+                        else:
+                            new_messages.append(msg)
+                    if not inserted:
+                        new_messages.insert(
+                            0, {"role": "system", "content": search_note}
+                        )
+                    messages = new_messages
+                    LOGGER.debug(
+                        "Injected live search brief (%s chars) into tool loop",
+                        len(brief),
+                    )
             except Exception as err:  # noqa: BLE001
                 LOGGER.warning(
-                    "Live search path failed (%s); falling back to chat completions",
+                    "Live search path failed (%s); continuing without search context",
                     err,
                 )
 

@@ -50,7 +50,7 @@
         "data_description": {
           "prompt": "Instruct how the LLM should respond. This can be a template.",
           "reasoning_effort": "Controls reasoning effort for Grok reasoning models (low/medium/high).",
-          "live_search": "Enable xAI server-side Web and/or X search via the Responses API.",
+          "live_search": "Enable xAI server-side Web and/or X search. Works with Assist tools (two-pass: search brief → tool loop).",
           "interaction_mode": "tools = direct HA tool calling; pipeline = try HA Assist first; chat_only = no device control.",
           "location_context": "e.g. Longview, TX — helps local weather/news search.",
           "fast_model": "Used when auto-routing detects a short/simple command. List is loaded live from xAI.",

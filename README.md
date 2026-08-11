@@ -123,6 +123,8 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 
 ## Version
 
+**1.7.5** — Live Search works with Assist tools (#26 two-pass: search brief → tool loop).
+
 **1.7.4** — Always-visible model pickers (chat / fast / fallback) loaded live from xAI `/v1/models` (non-chat models filtered).
 
 **1.7.3** — Merge all anyOf object-branch properties for timer tools (#25, thanks @CodyJon).
