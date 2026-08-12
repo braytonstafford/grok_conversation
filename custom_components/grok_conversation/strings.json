@@ -52,7 +52,7 @@
           "reasoning_effort": "Controls reasoning effort for Grok reasoning models (low/medium/high).",
           "live_search": "Enable xAI server-side Web and/or X search. Works with Assist tools (two-pass: search brief → tool loop).",
           "interaction_mode": "tools = direct HA tool calling; pipeline = try HA Assist first; chat_only = no device control.",
-          "location_context": "e.g. Longview, TX — helps local weather/news search.",
+          "location_context": "e.g. Calgary, Alberta, Canada — always sent to live search for 'near me' / local queries.",
           "fast_model": "Used when auto-routing detects a short/simple command. List is loaded live from xAI.",
           "fallback_model": "Tried automatically if the primary model errors. List is loaded live from xAI.",
           "chat_model": "Main conversation model. Options come from GET /v1/models (image/voice models filtered out). You can also type a model id.",

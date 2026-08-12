@@ -562,35 +562,33 @@ class OpenAIConversationEntity(
             return text
         return fallback
 
-    def _build_extra_system_prompt(
+    def _build_factual_context(
         self, user_input: conversation.ConversationInput
     ) -> str:
-        """Assemble location, user, voice, and home context blocks."""
+        """Location, local time, presence, weather — needed by live search.
+
+        Always attach this to the search pass even when HA tools are present
+        (#27). Persona/voice bits stay separate so they can stay gated.
+        """
         options = self.entry.options
         parts: list[str] = []
 
-        if options.get(CONF_VOICE_OPTIMIZED, RECOMMENDED_VOICE_OPTIMIZED):
-            parts.append(VOICE_OPTIMIZED_SUFFIX.strip())
-
         location = (options.get(CONF_LOCATION_CONTEXT) or "").strip()
         if location:
-            parts.append(f"Home location context for local queries: {location}.")
+            parts.append(
+                "Home location context for local queries "
+                f"(use this for 'near me', local weather, open now, distance): {location}."
+            )
         else:
             tz = self.hass.config.time_zone
             if tz:
                 parts.append(f"Home Assistant timezone: {tz}.")
 
-        if options.get(CONF_SEND_USER_NAME, RECOMMENDED_SEND_USER_NAME):
-            name = self._resolve_user_name(user_input)
-            if name:
-                parts.append(
-                    f"The current user is named {name}. Address them by name when natural."
-                )
-
         if options.get(CONF_HOME_CONTEXT, RECOMMENDED_HOME_CONTEXT):
             now = dt_util.now()
-            parts.append(f"Current local time: {now.strftime('%A %Y-%m-%d %H:%M')}.")
-            # Light presence snapshot
+            parts.append(
+                f"Current local time: {now.strftime('%A %Y-%m-%d %H:%M')}."
+            )
             people = []
             for state in self.hass.states.async_all("person"):
                 people.append(
@@ -615,6 +613,39 @@ class OpenAIConversationEntity(
                     + "."
                 )
 
+        return "\n".join(parts)
+
+    def _build_persona_context(
+        self, user_input: conversation.ConversationInput
+    ) -> str:
+        """Voice-style and user-name hints (not required for search grounding)."""
+        options = self.entry.options
+        parts: list[str] = []
+
+        if options.get(CONF_VOICE_OPTIMIZED, RECOMMENDED_VOICE_OPTIMIZED):
+            parts.append(VOICE_OPTIMIZED_SUFFIX.strip())
+
+        if options.get(CONF_SEND_USER_NAME, RECOMMENDED_SEND_USER_NAME):
+            name = self._resolve_user_name(user_input)
+            if name:
+                parts.append(
+                    f"The current user is named {name}. Address them by name when natural."
+                )
+
+        return "\n".join(parts)
+
+    def _build_extra_system_prompt(
+        self, user_input: conversation.ConversationInput
+    ) -> str:
+        """Assemble persona + factual context for the main LLM / tool path."""
+        parts = [
+            p
+            for p in (
+                self._build_persona_context(user_input),
+                self._build_factual_context(user_input),
+            )
+            if p
+        ]
         return "\n".join(parts)
 
     def _resolve_user_name(
@@ -773,12 +804,22 @@ class OpenAIConversationEntity(
                 "You have live web/X search. Answer with current facts only.",
                 "Be concise. Prefer scores, times, and concrete outcomes.",
                 "If results are uncertain, say what you found and what is unknown.",
+                "When the user says 'near me' / local / open now, use the home "
+                "location and local time below — do not ask them for a city.",
             ]
             if options.get(CONF_PROMPT):
                 search_system.append(str(options.get(CONF_PROMPT)))
-            if combined_extra and not ha_tools_available:
-                # Full persona only on search-only path; tool path keeps HA prompt
-                search_system.append(combined_extra)
+            # Factual context ALWAYS reaches the search pass (#27), even with HA tools
+            factual = self._build_factual_context(user_input)
+            if factual:
+                search_system.append(factual)
+            if not ha_tools_available:
+                # Persona / voice only on search-only path (avoid bloating tool path twice)
+                persona = self._build_persona_context(user_input)
+                if persona:
+                    search_system.append(persona)
+                if user_extra:
+                    search_system.append(user_extra)
 
             search_messages = [
                 m for m in messages if m.get("role") != "system"

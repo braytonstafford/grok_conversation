@@ -353,6 +353,7 @@ async def async_responses_completion(
     return text, p_tok, c_tok
 
 
+# Also expand search heuristics for "near me" / local business
 def looks_like_search_query(text: str) -> bool:
     """Heuristic: user wants fresh/web/X info."""
     t = (text or "").lower()
@@ -384,6 +385,13 @@ def looks_like_search_query(text: str) -> bool:
         "google",
         "what happened",
         "who is playing",
+        "near me",
+        "nearest",
+        "closest",
+        "open now",
+        "around here",
+        "in my area",
+        "nearby",
     )
     return any(k in t for k in keywords)
 
