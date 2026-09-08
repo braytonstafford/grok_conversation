@@ -355,7 +355,7 @@ async def async_responses_completion(
 
 # Also expand search heuristics for "near me" / local business
 def looks_like_search_query(text: str) -> bool:
-    """Heuristic: user wants fresh/web/X info."""
+    """Allow-list heuristic: user clearly wants fresh/web/X info."""
     t = (text or "").lower()
     keywords = (
         "latest",
@@ -394,6 +394,104 @@ def looks_like_search_query(text: str) -> bool:
         "nearby",
     )
     return any(k in t for k in keywords)
+
+
+def looks_like_non_search_query(text: str) -> bool:
+    """Deny-list for pipeline mode: greetings, jokes, timers, recipes, devices.
+
+    In pipeline mode HA already handled device intents before Grok runs, so
+    anything that still reaches Grok usually wants fresh data — except these.
+    """
+    t = (text or "").strip().lower()
+    if not t:
+        return True
+
+    if t in ("hi", "hey", "hello", "thanks", "thank you", "bye", "goodbye"):
+        return True
+
+    greeting_prefixes = (
+        "hello",
+        "hi ",
+        "hi,",
+        "hey ",
+        "hey,",
+        "good morning",
+        "good night",
+        "good afternoon",
+        "good evening",
+        "thanks",
+        "thank you",
+        "bye",
+        "goodbye",
+        "how are you",
+        "what's up",
+        "whats up",
+    )
+    if any(t.startswith(p) for p in greeting_prefixes):
+        return True
+
+    device_prefixes = (
+        "turn ",
+        "set ",
+        "play ",
+        "lock ",
+        "unlock ",
+        "pause ",
+        "stop ",
+        "open ",
+        "close ",
+        "switch ",
+        "dim ",
+        "brighten ",
+        "activate ",
+        "deactivate ",
+        "toggle ",
+    )
+    if any(t.startswith(p) for p in device_prefixes):
+        return True
+    if any(
+        p in t
+        for p in ("lights on", "lights off", "light on", "light off")
+    ):
+        return True
+
+    non_search_phrases = (
+        "tell me a joke",
+        "say a joke",
+        "make me laugh",
+        "set a timer",
+        "start a timer",
+        "timer for",
+        "remind me",
+        "set an alarm",
+        "wake me",
+        "recipe for",
+        "how to cook",
+        "how do i cook",
+        "how do i make",
+        "ingredients for",
+    )
+    return any(p in t for p in non_search_phrases)
+
+
+def should_use_live_search(
+    text: str, *, interaction_mode: str, live_search: str
+) -> bool:
+    """Decide whether to run the Responses live-search pass.
+
+    - chat_only: always search when live search is enabled (current behavior)
+    - pipeline: allow-list fast True; deny-list False; default True (#30)
+    - tools: keep the stricter allow-list only
+    """
+    if not live_search or live_search == LIVE_SEARCH_OFF:
+        return False
+    if interaction_mode == "chat_only":
+        return True
+    if looks_like_search_query(text):
+        return True
+    if interaction_mode == "pipeline":
+        return not looks_like_non_search_query(text)
+    return False
 
 
 def looks_like_simple_query(text: str) -> bool:

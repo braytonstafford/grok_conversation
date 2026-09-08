@@ -123,6 +123,8 @@ CI: Hassfest + HACS validation on push/PR/nightly.
 
 ## Version
 
+**1.8.0** — Pipeline live-search deny-list (#30); satellite TTS prewarm before continue (#31); persona on search pass + no spoken citations (#32). Thanks @CodyJon.
+
 **1.7.7** — Declare `voluptuous-openapi` so setup works on HA 2026.9 (#28).
 
 **1.7.6** — Search pass always gets location/time/presence (#27); "near me" heuristics.
