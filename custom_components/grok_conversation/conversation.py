@@ -30,6 +30,7 @@ from .api_helpers import (
     extract_usage,
     looks_like_search_query,
     looks_like_simple_query,
+    should_use_live_search,
 )
 from .const import (
     CONF_AUTO_MODEL_ROUTING,
@@ -50,11 +51,9 @@ from .const import (
     CONF_TOP_P,
     CONF_VOICE_OPTIMIZED,
     DOMAIN,
-    LIVE_SEARCH_OFF,
     LOGGER,
     MODE_CHAT_ONLY,
     MODE_PIPELINE,
-    MODE_TOOLS,
     RECOMMENDED_AUTO_MODEL_ROUTING,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_FALLBACK_MODEL,
@@ -568,7 +567,8 @@ class OpenAIConversationEntity(
         """Location, local time, presence, weather — needed by live search.
 
         Always attach this to the search pass even when HA tools are present
-        (#27). Persona/voice bits stay separate so they can stay gated.
+        (#27). Persona/voice bits are built separately and also attached on
+        the search pass (#32).
         """
         options = self.entry.options
         parts: list[str] = []
@@ -718,6 +718,88 @@ class OpenAIConversationEntity(
             return None
         return result
 
+    # Long spoken replies without prewarmed TTS: don't open the mic early (#31)
+    _SATELLITE_LONG_REPLY_CHARS = 280
+
+    async def _prewarm_pipeline_tts(
+        self,
+        message: str,
+        user_input: conversation.ConversationInput,
+    ) -> bool:
+        """Pre-generate Assist pipeline TTS so satellite playback can start ASAP.
+
+        Reads engine/language/voice from the preferred Assist pipeline — not a
+        hardcoded voice. Populates the TTS cache used by the next pipeline TTS.
+        """
+        try:
+            from homeassistant.components import assist_pipeline, tts
+            from homeassistant.components.tts.media_source import (
+                generate_media_source_id,
+            )
+
+            pipeline = assist_pipeline.async_get_pipeline(self.hass)
+            if not pipeline or not pipeline.tts_engine:
+                return False
+
+            options: dict[str, Any] = {}
+            if pipeline.tts_voice is not None:
+                options[tts.ATTR_VOICE] = pipeline.tts_voice
+
+            media_id = generate_media_source_id(
+                self.hass,
+                message=message,
+                engine=pipeline.tts_engine,
+                language=pipeline.tts_language,
+                options=options or None,
+                cache=True,
+            )
+            await tts.async_get_media_source_audio(self.hass, media_id)
+            LOGGER.debug(
+                "Prewarmed pipeline TTS for device_id=%s engine=%s voice=%s",
+                user_input.device_id,
+                pipeline.tts_engine,
+                pipeline.tts_voice,
+            )
+            return True
+        except Exception as err:  # noqa: BLE001
+            LOGGER.debug("TTS prewarm failed: %s", err)
+            return False
+
+    async def _resolve_continue_conversation(
+        self,
+        user_input: conversation.ConversationInput,
+        chat_log: conversation.ChatLog,
+        speech: str | None,
+    ) -> bool:
+        """Satellite-aware continue_conversation (#31).
+
+        Text chat (no device_id) keeps ChatLog's question-mark heuristic.
+        For Assist satellites, prewarm TTS before returning True so the puck
+        does not start listening while xAI TTS is still generating. If prewarm
+        fails on a long reply, force False.
+        """
+        continue_conv = bool(chat_log.continue_conversation)
+        if not continue_conv:
+            return False
+        if not user_input.device_id:
+            return True
+
+        speech_text = (speech or "").strip()
+        if not speech_text:
+            return False
+
+        if await self._prewarm_pipeline_tts(speech_text, user_input):
+            return True
+
+        if len(speech_text) >= self._SATELLITE_LONG_REPLY_CHARS:
+            LOGGER.debug(
+                "TTS prewarm failed for long satellite reply (%s chars); "
+                "disabling continue_conversation",
+                len(speech_text),
+            )
+            return False
+        return True
+
     async def _async_handle_message_inner(
         self,
         user_input: conversation.ConversationInput,
@@ -786,23 +868,29 @@ class OpenAIConversationEntity(
         client = self.entry.runtime_data
         live_search = options.get(CONF_LIVE_SEARCH, RECOMMENDED_LIVE_SEARCH)
         show_citations = options.get(CONF_SHOW_CITATIONS, RECOMMENDED_SHOW_CITATIONS)
+        # Spoken Assist path: never append citation footnotes to speech (#32)
+        show_citations_effective = bool(show_citations) and not bool(
+            user_input.device_id
+        )
 
         # Live search via Responses API. Previously this was skipped whenever HA
         # tools were present (#26), which made Live Search a no-op for Assist users.
-        use_search = bool(
-            live_search
-            and live_search != LIVE_SEARCH_OFF
-            and (
-                looks_like_search_query(user_input.text)
-                or mode == MODE_CHAT_ONLY
-            )
+        # Pipeline mode uses an inverted heuristic (#30): deny-list only.
+        use_search = should_use_live_search(
+            user_input.text,
+            interaction_mode=mode,
+            live_search=live_search,
         )
         ha_tools_available = bool(chat_log.llm_api and chat_log.llm_api.tools)
 
         if use_search:
+            # Soften overlay: score/facts first, then honor persona (#32)
             search_system = [
-                "You have live web/X search. Answer with current facts only.",
-                "Be concise. Prefer scores, times, and concrete outcomes.",
+                "You have live web/X search. Lead with the key fact or score, "
+                "then briefly add context or opinion when the user's prompt "
+                "asks for personality.",
+                "Be concise. Prefer scores, times, and concrete outcomes first.",
+                "Honor the user's personality/system prompt — keep voice and style.",
                 "If results are uncertain, say what you found and what is unknown.",
                 "When the user says 'near me' / local / open now, use the home "
                 "location and local time below — do not ask them for a city.",
@@ -813,13 +901,14 @@ class OpenAIConversationEntity(
             factual = self._build_factual_context(user_input)
             if factual:
                 search_system.append(factual)
-            if not ha_tools_available:
-                # Persona / voice only on search-only path (avoid bloating tool path twice)
-                persona = self._build_persona_context(user_input)
-                if persona:
-                    search_system.append(persona)
-                if user_extra:
-                    search_system.append(user_extra)
+            # Always attach persona/voice on the search pass (#32) — previously
+            # skipped whenever HA tools were present, which made Assist sound
+            # like a recap bot.
+            persona = self._build_persona_context(user_input)
+            if persona:
+                search_system.append(persona)
+            if user_extra:
+                search_system.append(user_extra)
 
             search_messages = [
                 m for m in messages if m.get("role") != "system"
@@ -836,7 +925,7 @@ class OpenAIConversationEntity(
                     ),
                     top_p=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                     live_search=live_search,
-                    show_citations=bool(show_citations),
+                    show_citations=show_citations_effective,
                     reasoning_effort=options.get(CONF_REASONING_EFFORT),
                 )
                 text = _strip_json_from_response(text)
@@ -857,7 +946,9 @@ class OpenAIConversationEntity(
                     return conversation.ConversationResult(
                         response=intent_response,
                         conversation_id=chat_log.conversation_id,
-                        continue_conversation=chat_log.continue_conversation,
+                        continue_conversation=await self._resolve_continue_conversation(
+                            user_input, chat_log, text
+                        ),
                     )
 
                 if text and ha_tools_available:
@@ -1149,7 +1240,9 @@ class OpenAIConversationEntity(
         return conversation.ConversationResult(
             response=intent_response,
             conversation_id=chat_log.conversation_id,
-            continue_conversation=chat_log.continue_conversation,
+            continue_conversation=await self._resolve_continue_conversation(
+                user_input, chat_log, speech
+            ),
         )
 
     async def _async_entry_update_listener(
