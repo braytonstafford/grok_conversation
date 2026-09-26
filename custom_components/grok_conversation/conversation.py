@@ -2,16 +2,9 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncGenerator, Callable
-import json
-from typing import Any, AsyncIterator, Literal
+from typing import Any, Literal
 
 import openai
-from openai.types.chat import (
-    ChatCompletionChunk,
-    ChatCompletionMessageParam,
-)
-from voluptuous_openapi import convert
 
 from homeassistant.components import conversation
 from homeassistant.config_entries import ConfigEntry
@@ -20,21 +13,17 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers import device_registry as dr, intent, llm
 from homeassistant.helpers.entity_platform import AddConfigEntryEntitiesCallback
-from homeassistant.helpers.llm import ToolInput
 from homeassistant.util import dt as dt_util
 
 from . import OpenAIConfigEntry
 from .api_helpers import (
-    async_chat_completion,
     async_responses_completion,
-    extract_usage,
     looks_like_search_query,
     looks_like_simple_query,
     should_use_live_search,
 )
 from .const import (
     CONF_AUTO_MODEL_ROUTING,
-    CONF_BUDGET_WARN_USD,
     CONF_CHAT_MODEL,
     CONF_FALLBACK_MODEL,
     CONF_FAST_MODEL,
@@ -62,7 +51,6 @@ from .const import (
     RECOMMENDED_INTERACTION_MODE,
     RECOMMENDED_LIVE_SEARCH,
     RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_SEND_USER_NAME,
     RECOMMENDED_SHOW_CITATIONS,
     RECOMMENDED_TEMPERATURE,
@@ -70,25 +58,11 @@ from .const import (
     RECOMMENDED_VOICE_OPTIMIZED,
     VOICE_OPTIMIZED_SUFFIX,
 )
-from .exceptions import TokenLengthExceededError
-from .usage import UsageTracker
-
-MAX_TOOL_ITERATIONS = 10
-
-
-def _strip_json_from_response(response: str) -> str:
-    """Strip JSON objects from the end of LLM responses."""
-    if not response:
-        return response
-    last_brace_index = response.rfind("{")
-    if last_brace_index == -1:
-        return response
-    potential_json = response[last_brace_index:]
-    try:
-        json.loads(potential_json)
-        return response[:last_brace_index].strip()
-    except json.JSONDecodeError:
-        return response
+from .entity import (
+    GrokBaseLLMEntity,
+    convert_content_to_param,
+    _strip_json_from_response,
+)
 
 
 async def async_setup_entry(
@@ -101,320 +75,10 @@ async def async_setup_entry(
     async_add_entities([agent])
 
 
-def _sanitize_tool_schema(schema: Any) -> dict[str, Any]:
-    """Normalize tool JSON schema for xAI function calling.
-
-    xAI rejects roots that are anyOf/oneOf unions (e.g. HA HassStartTimer).
-    Merge properties from every object branch so alternate arg shapes
-    (name vs hours/minutes/seconds) are all still available to the model.
-    """
-    if not isinstance(schema, dict):
-        return {
-            "type": "object",
-            "properties": {},
-            "additionalProperties": True,
-        }
-
-    def _merge_union_branches(branches: list[Any]) -> dict[str, Any] | None:
-        """Collapse anyOf/oneOf/allOf into one object schema.
-
-        Properties from every object-like branch are merged so no timer /
-        alternate-shape parameters are dropped. ``required`` is dropped
-        because it is no longer valid across merged alternatives.
-        """
-        props: dict[str, Any] = {}
-        objectish = 0
-        for branch in branches:
-            if not isinstance(branch, dict):
-                continue
-            # Recurse first so nested unions flatten too
-            branch = _clean(branch)
-            if not isinstance(branch, dict):
-                continue
-            if branch.get("type") == "object" or "properties" in branch:
-                objectish += 1
-                nested = branch.get("properties")
-                if isinstance(nested, dict):
-                    props.update(nested)
-        if objectish:
-            return {
-                "type": "object",
-                "properties": props,
-                "additionalProperties": True,
-            }
-        # No object branch — keep first dict branch (cleaned)
-        for branch in branches:
-            if isinstance(branch, dict):
-                return _clean(branch)
-        return None
-
-    def _clean(node: Any) -> Any:
-        if not isinstance(node, dict):
-            return node
-        node = dict(node)
-
-        # Collapse union keys to a single object-compatible schema
-        for union_key in ("anyOf", "oneOf", "allOf"):
-            if union_key not in node or not isinstance(node[union_key], list):
-                continue
-            branches = node[union_key]
-            merged = _merge_union_branches(branches)
-            rest = {
-                k: v
-                for k, v in node.items()
-                if k not in (union_key, "required")
-            }
-            if isinstance(merged, dict):
-                # Branch content wins for type/properties; outer keys fill gaps
-                node = {**rest, **merged}
-            else:
-                node = rest
-            # Only collapse one union key per pass; re-enter via recursion below
-            break
-
-        # Normalize type lists that include object
-        t = node.get("type")
-        if isinstance(t, list):
-            if "object" in t:
-                node["type"] = "object"
-            elif "array" in t:
-                node["type"] = "array"
-            elif t:
-                node["type"] = t[0]
-
-        if "properties" in node and isinstance(node["properties"], dict):
-            node["properties"] = {
-                key: _clean(value) for key, value in node["properties"].items()
-            }
-        if "items" in node:
-            node["items"] = _clean(node["items"])
-        if "additionalProperties" in node and isinstance(
-            node["additionalProperties"], dict
-        ):
-            node["additionalProperties"] = _clean(node["additionalProperties"])
-
-        # Drop nested unsupported combinators left behind
-        for bad in ("not",):
-            node.pop(bad, None)
-
-        return node
-
-    cleaned = _clean(schema)
-
-    # Root must be an object for xAI
-    if not isinstance(cleaned, dict):
-        cleaned = {}
-    if cleaned.get("type") != "object" and "properties" not in cleaned:
-        # Non-object root (string/number/etc.) — wrap
-        cleaned = {
-            "type": "object",
-            "properties": {"value": cleaned} if cleaned else {},
-            "additionalProperties": True,
-        }
-    cleaned.setdefault("type", "object")
-    if cleaned["type"] != "object":
-        cleaned = {
-            "type": "object",
-            "properties": {"value": cleaned},
-            "additionalProperties": True,
-        }
-    cleaned.setdefault("properties", {})
-    if not isinstance(cleaned["properties"], dict):
-        cleaned["properties"] = {}
-
-    # Strip root-level keys xAI rejects on tool parameter schemas
-    for bad in ("oneOf", "anyOf", "allOf", "not", "enum"):
-        cleaned.pop(bad, None)
-    # Drop required after union merge — alternatives make it invalid
-    if "required" in cleaned and not cleaned.get("properties"):
-        cleaned.pop("required", None)
-
-    return cleaned
-
-
-def _format_tool(
-    tool: llm.Tool, custom_serializer: Callable[[Any], Any] | None
-) -> dict[str, Any]:
-    """Format tool specification for xAI / OpenAI-compatible function calling."""
-    # HA scripts/tools with selector: fields need llm.selector_serializer so
-    # voluptuous_openapi.convert() does not try to use TextSelector as a dict key.
-    serializer = custom_serializer or llm.selector_serializer
-    try:
-        raw_schema = convert(tool.parameters, custom_serializer=serializer)
-    except Exception as err:  # noqa: BLE001
-        LOGGER.warning(
-            "Failed to convert schema for tool %s (%s); using empty object schema",
-            tool.name,
-            err,
-        )
-        raw_schema = {"type": "object", "properties": {}}
-
-    schema = _sanitize_tool_schema(raw_schema)
-    return {
-        "type": "function",
-        "function": {
-            "name": tool.name,
-            "description": tool.description or "",
-            "parameters": schema,
-        },
-    }
-
-
-def _convert_content_to_param(
-    content: conversation.Content,
-) -> list[ChatCompletionMessageParam]:
-    """Convert any native chat message for this agent to the native format."""
-    messages: list[ChatCompletionMessageParam] = []
-
-    if isinstance(content, conversation.ToolResultContent):
-        tool_message = {
-            "role": "tool",
-            "content": json.dumps(content.tool_result),
-            "tool_call_id": content.tool_call_id,
-        }
-        messages.append(tool_message)  # type: ignore[arg-type]
-        return messages
-
-    if isinstance(content, conversation.AssistantContent) and content.tool_calls:
-        tool_calls_list = []
-        for tool_call in content.tool_calls:
-            if hasattr(tool_call, "function"):
-                tool_calls_list.append(
-                    {
-                        "id": tool_call.id,
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.function.name,
-                            "arguments": tool_call.function.arguments,
-                        },
-                    }
-                )
-            elif hasattr(tool_call, "tool_name"):
-                tool_calls_list.append(
-                    {
-                        "id": tool_call.id
-                        if hasattr(tool_call, "id")
-                        else str(hash(tool_call)),
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.tool_name,
-                            "arguments": json.dumps(tool_call.tool_args)
-                            if hasattr(tool_call, "tool_args")
-                            else "{}",
-                        },
-                    }
-                )
-            elif isinstance(tool_call, dict):
-                tool_calls_list.append(
-                    {
-                        "id": tool_call.get("id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": tool_call.get(
-                                "tool_name", tool_call.get("name", "")
-                            ),
-                            "arguments": json.dumps(
-                                tool_call.get(
-                                    "tool_args", tool_call.get("arguments", {})
-                                )
-                            ),
-                        },
-                    }
-                )
-            else:
-                tool_calls_list.append(
-                    {
-                        "id": getattr(tool_call, "id", ""),
-                        "type": "function",
-                        "function": {
-                            "name": getattr(
-                                tool_call,
-                                "tool_name",
-                                getattr(tool_call, "name", ""),
-                            ),
-                            "arguments": json.dumps(
-                                getattr(
-                                    tool_call,
-                                    "tool_args",
-                                    getattr(tool_call, "arguments", {}),
-                                )
-                            ),
-                        },
-                    }
-                )
-
-        messages.append(
-            {
-                "role": "assistant",
-                "content": content.content or "",
-                "tool_calls": tool_calls_list,
-            }
-        )  # type: ignore[arg-type]
-        return messages
-
-    if hasattr(content, "content") and content.content:
-        role: Literal["user", "assistant", "system", "developer"] = content.role
-        if role == "developer":
-            role = "system"
-        messages.append({"role": role, "content": content.content})
-    return messages
-
-
-async def _transform_stream(
-    chat_log: conversation.ChatLog,
-    result: AsyncIterator[ChatCompletionChunk],
-) -> AsyncGenerator[dict, None]:
-    """Transform an xAI chat completions delta stream into Home Assistant format."""
-    current_tool_call = None
-    tool_call_counter = 0
-    async for chunk in result:
-        for choice in chunk.choices:
-            if not choice.delta:
-                continue
-            if choice.delta.role:
-                yield {"role": choice.delta.role}
-            if choice.delta.content:
-                yield {"content": choice.delta.content}
-            if choice.delta.function_call:
-                if current_tool_call is None:
-                    current_tool_call = {
-                        "name": choice.delta.function_call.name,
-                        "arguments": choice.delta.function_call.arguments or "",
-                    }
-                else:
-                    if choice.delta.function_call.arguments:
-                        current_tool_call[
-                            "arguments"
-                        ] += choice.delta.function_call.arguments
-                try:
-                    parsed_args = json.loads(current_tool_call["arguments"])
-                    tool_id = str(tool_call_counter)
-                    yield {
-                        "tool_calls": [
-                            {
-                                "id": tool_id,
-                                "tool_name": current_tool_call["name"],
-                                "tool_args": parsed_args,
-                            }
-                        ]
-                    }
-                    current_tool_call = None
-                    tool_call_counter += 1
-                except json.JSONDecodeError:
-                    pass
-            if chunk.usage:
-                chat_log.async_trace(
-                    {
-                        "stats": {
-                            "input_tokens": chunk.usage.prompt_tokens,
-                            "output_tokens": chunk.usage.completion_tokens,
-                        }
-                    }
-                )
-
-
 class OpenAIConversationEntity(
-    conversation.ConversationEntity, conversation.AbstractConversationAgent
+    conversation.ConversationEntity,
+    conversation.AbstractConversationAgent,
+    GrokBaseLLMEntity,
 ):
     """Grok conversation agent."""
 
@@ -423,6 +87,7 @@ class OpenAIConversationEntity(
 
     def __init__(self, entry: OpenAIConfigEntry) -> None:
         """Initialize the agent."""
+        GrokBaseLLMEntity.__init__(self, entry, None)
         self.entry = entry
         self._attr_unique_id = entry.entry_id
         self._attr_device_info = dr.DeviceInfo(
@@ -474,41 +139,6 @@ class OpenAIConversationEntity(
         conversation.async_unset_agent(self.hass, self.entry)
         await super().async_will_remove_from_hass()
 
-    def _usage_tracker(self) -> UsageTracker | None:
-        data = self.hass.data.get(DOMAIN, {}).get(self.entry.entry_id)
-        if not data:
-            return None
-        return data.get("usage")
-
-    async def _record_usage(
-        self, model: str, prompt_tokens: int, completion_tokens: int
-    ) -> None:
-        tracker = self._usage_tracker()
-        if tracker:
-            await tracker.async_record(
-                model=model,
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                service="conversation",
-            )
-            budget = float(
-                self.entry.options.get(CONF_BUDGET_WARN_USD, 0) or 0
-            )
-            if budget > 0 and tracker.snapshot.estimated_cost_usd >= budget:
-                LOGGER.warning(
-                    "Grok estimated spend $%.4f exceeded budget warn $%.2f",
-                    tracker.snapshot.estimated_cost_usd,
-                    budget,
-                )
-                self.hass.bus.async_fire(
-                    f"{DOMAIN}_budget_warning",
-                    {
-                        "entry_id": self.entry.entry_id,
-                        "estimated_cost_usd": tracker.snapshot.estimated_cost_usd,
-                        "budget_warn_usd": budget,
-                    },
-                )
-
     async def _async_handle_message(
         self,
         user_input: conversation.ConversationInput,
@@ -536,14 +166,6 @@ class OpenAIConversationEntity(
         return True
 
     @staticmethod
-    def _tool_result_payload(tool_result: Any) -> str:
-        """Serialize tool results for the model. Always pass through real data."""
-        try:
-            return json.dumps(tool_result, default=str)
-        except TypeError:
-            return json.dumps({"result": str(tool_result)})
-
-    @staticmethod
     def _pick_speech_content(chat_log: conversation.ChatLog) -> str | None:
         """Prefer the last assistant message that is not a tool-call turn."""
         fallback: str | None = None
@@ -553,7 +175,6 @@ class OpenAIConversationEntity(
             text = (content.content or "").strip()
             if not text:
                 continue
-            # Skip intermediate tool-call turns (often OOC / "calling tool…")
             if getattr(content, "tool_calls", None):
                 if fallback is None:
                     fallback = text
@@ -695,7 +316,6 @@ class OpenAIConversationEntity(
         speech = ""
         if result and result.response:
             speech = result.response.speech.get("plain", {}).get("speech", "")
-            # Also check response response types
             if not speech and hasattr(result.response, "as_dict"):
                 data = result.response.as_dict()
                 speech = (
@@ -846,7 +466,7 @@ class OpenAIConversationEntity(
         messages = [
             m
             for content in chat_log.content
-            for m in _convert_content_to_param(content)
+            for m in convert_content_to_param(content)
         ]
 
         # Prefix username on latest user message when enabled
@@ -929,7 +549,9 @@ class OpenAIConversationEntity(
                     reasoning_effort=options.get(CONF_REASONING_EFFORT),
                 )
                 text = _strip_json_from_response(text)
-                await self._record_usage(model, p_tok, c_tok)
+                await self._record_usage(
+                    model, p_tok, c_tok, service="conversation"
+                )
 
                 if text and not ha_tools_available:
                     # Search-only path (chat_only or no LLM HASS API)
@@ -995,238 +617,21 @@ class OpenAIConversationEntity(
                     err,
                 )
 
-        # Tool-calling chat completions loop
-        models_to_try = [model]
-        if fallback_model and fallback_model != model:
-            models_to_try.append(fallback_model)
-
-        last_error: Exception | None = None
-        for active_model in models_to_try:
-            try:
-                result = await self._tool_loop(
-                    user_input=user_input,
-                    chat_log=chat_log,
-                    messages=list(messages),
-                    model=active_model,
-                    options=options,
-                    client=client,
-                )
-                return result
-            except openai.RateLimitError as err:
-                last_error = err
-                LOGGER.error("Rate limited by xAI on %s: %s", active_model, err)
-                break
-            except openai.OpenAIError as err:
-                last_error = err
-                LOGGER.warning(
-                    "Model %s failed (%s); trying fallback if available",
-                    active_model,
-                    err,
-                )
-                continue
-            except TokenLengthExceededError:
-                raise
-            except Exception as err:  # noqa: BLE001
-                last_error = err
-                LOGGER.warning("Unexpected error on %s: %s", active_model, err)
-                continue
-
-        if isinstance(last_error, openai.RateLimitError):
-            raise HomeAssistantError("Rate limited or insufficient funds") from last_error
-        raise HomeAssistantError(f"Error talking to xAI: {last_error}") from last_error
-
-    async def _tool_loop(
-        self,
-        *,
-        user_input: conversation.ConversationInput,
-        chat_log: conversation.ChatLog,
-        messages: list,
-        model: str,
-        options,
-        client,
-    ) -> conversation.ConversationResult:
-        """Run chat completion tool iterations for one model."""
-        for _iteration in range(MAX_TOOL_ITERATIONS):
-            tools: list[dict[str, Any]] | None = None
-            if chat_log.llm_api:
-                tools = []
-                for tool in chat_log.llm_api.tools:
-                    try:
-                        tools.append(
-                            _format_tool(tool, chat_log.llm_api.custom_serializer)
-                        )
-                    except Exception as err:  # noqa: BLE001
-                        LOGGER.warning(
-                            "Skipping tool %s due to schema error: %s",
-                            getattr(tool, "name", "?"),
-                            err,
-                        )
-                if not tools:
-                    tools = None
-
-            try:
-                result = await async_chat_completion(
-                    client,
-                    model=model,
-                    messages=messages,
-                    max_tokens=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
-                    top_p=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
-                    temperature=options.get(
-                        CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
-                    ),
-                    tools=tools,
-                    tool_choice="auto" if tools else None,
-                    reasoning_effort=options.get(
-                        CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
-                    ),
-                    user=chat_log.conversation_id,
-                )
-            except openai.OpenAIError:
-                raise
-
-            choice = result.choices[0]
-            message = choice.message
-            p_tok, c_tok = extract_usage(result)
-
-            if getattr(message, "tool_calls", None):
-                ha_tool_calls = []
-                for tc in message.tool_calls:
-                    tc.external = True
-                    ha_tool_calls.append(tc)
-
-                assistant_content = conversation.AssistantContent(
-                    agent_id=user_input.agent_id,
-                    content=message.content or "",
-                    tool_calls=ha_tool_calls,
-                )
-                async for _ in chat_log.async_add_assistant_content(assistant_content):
-                    pass
-                messages.append(
-                    {
-                        "role": "assistant",
-                        "content": message.content,
-                        "tool_calls": [
-                            {
-                                "id": tc.id,
-                                "type": tc.type,
-                                "function": {
-                                    "name": tc.function.name,
-                                    "arguments": tc.function.arguments,
-                                },
-                            }
-                            for tc in message.tool_calls
-                        ],
-                    }
-                )
-
-                for tool_call in message.tool_calls:
-                    try:
-                        tool_name = tool_call.function.name
-                        try:
-                            tool_args = json.loads(tool_call.function.arguments or "{}")
-                        except json.JSONDecodeError as err:
-                            tool_result = {
-                                "error": f"Invalid tool arguments JSON: {err}",
-                                "raw_arguments": tool_call.function.arguments,
-                            }
-                            messages.append(
-                                {
-                                    "role": "tool",
-                                    "tool_call_id": tool_call.id,
-                                    "content": self._tool_result_payload(tool_result),
-                                }
-                            )
-                            continue
-                        if not chat_log.llm_api:
-                            tool_result = {
-                                "error": "LLM HASS API not configured. Enable Home Assistant LLM API / Assist control in Grok Conversation options."
-                            }
-                        else:
-                            tool = next(
-                                (
-                                    t
-                                    for t in chat_log.llm_api.tools
-                                    if t.name == tool_name
-                                ),
-                                None,
-                            )
-                            if tool is None:
-                                tool_result = {
-                                    "error": f"Tool {tool_name} not found"
-                                }
-                            else:
-                                # ToolInput only accepts tool_name/tool_args;
-                                # context/user/device live on LLMContext (as_llm_context).
-                                tool_input = ToolInput(
-                                    tool_name=tool_name,
-                                    tool_args=tool_args,
-                                )
-                                tool_result = await tool.async_call(
-                                    self.hass,
-                                    tool_input,
-                                    user_input.as_llm_context(DOMAIN),
-                                )
-                                LOGGER.debug(
-                                    "Tool %s result: %s", tool_name, tool_result
-                                )
-                        # Always return the real tool payload. Filtering "unhelpful"
-                        # results caused the model to invent successful actions (#8/#16).
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": self._tool_result_payload(tool_result),
-                            }
-                        )
-                    except Exception as err:  # noqa: BLE001
-                        LOGGER.error(
-                            "Error executing tool %s: %s",
-                            tool_call.function.name,
-                            err,
-                            exc_info=True,
-                        )
-                        messages.append(
-                            {
-                                "role": "tool",
-                                "tool_call_id": tool_call.id,
-                                "content": self._tool_result_payload(
-                                    {
-                                        "error": str(err),
-                                        "tool": tool_call.function.name,
-                                    }
-                                ),
-                            }
-                        )
-
-                await self._record_usage(model, p_tok, c_tok)
-                continue
-
-            full_response = _strip_json_from_response(message.content or "")
-            if full_response:
-                async for _ in chat_log.async_add_assistant_content(
-                    conversation.AssistantContent(
-                        agent_id=user_input.agent_id, content=full_response
-                    )
-                ):
-                    pass
-                messages.append({"role": "assistant", "content": full_response})
-
-            if result.usage:
-                chat_log.async_trace(
-                    {
-                        "stats": {
-                            "input_tokens": result.usage.prompt_tokens,
-                            "output_tokens": result.usage.completion_tokens,
-                        }
-                    }
-                )
-            await self._record_usage(model, p_tok, c_tok)
-
-            if choice.finish_reason == "length":
-                raise TokenLengthExceededError(
-                    options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS)
-                )
-            break
+        # Shared chat-completions + tool loop (entity base)
+        try:
+            await self._async_handle_chat_log(
+                chat_log,
+                model=model,
+                options=dict(options),
+                messages=list(messages),
+                agent_id=user_input.agent_id,
+                service="conversation",
+                fallback_model=fallback_model,
+            )
+        except HomeAssistantError:
+            raise
+        except openai.OpenAIError as err:
+            raise HomeAssistantError(f"Error talking to xAI: {err}") from err
 
         intent_response = intent.IntentResponse(language=user_input.language)
         speech = self._pick_speech_content(chat_log)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from mimetypes import guess_file_type
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 from urllib.parse import urlparse
 
@@ -13,7 +14,7 @@ from openai.types.chat import ChatCompletionMessageParam
 from openai.types.images_response import ImagesResponse
 import voluptuous as vol
 
-from homeassistant.config_entries import ConfigEntry
+from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import (
     HomeAssistant,
@@ -47,12 +48,14 @@ from .const import (
     CONF_SHOW_CITATIONS,
     CONF_TEMPERATURE,
     CONF_TOP_P,
+    DEFAULT_AI_TASK_NAME,
     DOMAIN,
     IMAGE_QUALITIES,
     IMAGE_SIZES,
     IMAGE_STYLES,
     LIVE_SEARCH_OFF,
     LOGGER,
+    RECOMMENDED_AI_TASK_OPTIONS,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_IMAGE_GENERATION_MODEL,
     RECOMMENDED_MAX_TOKENS,
@@ -72,6 +75,7 @@ from .usage import UsageTracker
 from .voice_api import async_validate_voice_access
 
 PLATFORMS = (
+    Platform.AI_TASK,
     Platform.CONVERSATION,
     Platform.SENSOR,
     Platform.TTS,
@@ -820,3 +824,44 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if unload_ok:
         hass.data.get(DOMAIN, {}).pop(entry.entry_id, None)
     return unload_ok
+
+
+def _add_ai_task_subentry(hass: HomeAssistant, entry: ConfigEntry) -> None:
+    """Add default AI Task subentry when missing."""
+    if any(
+        sub.subentry_type == "ai_task_data" for sub in entry.subentries.values()
+    ):
+        return
+    hass.config_entries.async_add_subentry(
+        entry,
+        ConfigSubentry(
+            data=MappingProxyType(dict(RECOMMENDED_AI_TASK_OPTIONS)),
+            subentry_type="ai_task_data",
+            title=DEFAULT_AI_TASK_NAME,
+            unique_id=None,
+        ),
+    )
+
+
+async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
+    """Migrate config entry (add AI Task subentry; preserve options/entity IDs)."""
+    LOGGER.debug(
+        "Migrating %s from version %s.%s",
+        entry.entry_id,
+        entry.version,
+        entry.minor_version,
+    )
+
+    if entry.version > 1:
+        return False
+
+    if entry.version == 1 and entry.minor_version < 2:
+        _add_ai_task_subentry(hass, entry)
+        hass.config_entries.async_update_entry(entry, minor_version=2)
+
+    LOGGER.debug(
+        "Migration to version %s.%s successful",
+        entry.version,
+        entry.minor_version,
+    )
+    return True

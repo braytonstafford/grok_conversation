@@ -13,10 +13,12 @@ from homeassistant.config_entries import (
     ConfigEntry,
     ConfigFlow,
     ConfigFlowResult,
+    ConfigSubentryFlow,
     OptionsFlow,
+    SubentryFlowResult,
 )
-from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API
-from homeassistant.core import HomeAssistant
+from homeassistant.const import CONF_API_KEY, CONF_LLM_HASS_API, CONF_NAME
+from homeassistant.core import HomeAssistant, callback
 from homeassistant.helpers import llm
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
 from homeassistant.helpers.httpx_client import get_async_client
@@ -40,6 +42,7 @@ from .const import (
     CONF_FALLBACK_MODEL,
     CONF_FAST_MODEL,
     CONF_HOME_CONTEXT,
+    CONF_IMAGE_MODEL,
     CONF_INTERACTION_MODE,
     CONF_LIVE_SEARCH,
     CONF_LOCATION_CONTEXT,
@@ -52,17 +55,20 @@ from .const import (
     CONF_TEMPERATURE,
     CONF_TOP_P,
     CONF_VOICE_OPTIMIZED,
+    DEFAULT_AI_TASK_NAME,
     DOMAIN,
     GROK_SYSTEM_PROMPT,
     MODE_CHAT_ONLY,
     MODE_PIPELINE,
     MODE_TOOLS,
+    RECOMMENDED_AI_TASK_OPTIONS,
     RECOMMENDED_AUTO_MODEL_ROUTING,
     RECOMMENDED_BUDGET_WARN_USD,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_FALLBACK_MODEL,
     RECOMMENDED_FAST_MODEL,
     RECOMMENDED_HOME_CONTEXT,
+    RECOMMENDED_IMAGE_GENERATION_MODEL,
     RECOMMENDED_INTERACTION_MODE,
     RECOMMENDED_LIVE_SEARCH,
     RECOMMENDED_MAX_TOKENS,
@@ -156,6 +162,7 @@ class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
     """Handle a config flow for Grok Conversation."""
 
     VERSION = 1
+    MINOR_VERSION = 2
 
     async def async_step_user(
         self, user_input: dict[str, Any] | None = None
@@ -188,6 +195,14 @@ class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
                 title="xAI Grok",
                 data=user_input,
                 options=RECOMMENDED_OPTIONS,
+                subentries=[
+                    {
+                        "subentry_type": "ai_task_data",
+                        "data": dict(RECOMMENDED_AI_TASK_OPTIONS),
+                        "title": DEFAULT_AI_TASK_NAME,
+                        "unique_id": None,
+                    },
+                ],
             )
 
         return self.async_show_form(
@@ -203,6 +218,16 @@ class OpenAIConfigFlow(ConfigFlow, domain=DOMAIN):
     ) -> OptionsFlow:
         """Create the options flow."""
         return OpenAIOptionsFlow(config_entry)
+
+    @classmethod
+    @callback
+    def async_get_supported_subentry_types(
+        cls, config_entry: ConfigEntry
+    ) -> dict[str, type[ConfigSubentryFlow]]:
+        """Return subentries supported by this integration."""
+        return {
+            "ai_task_data": GrokAITaskSubentryFlowHandler,
+        }
 
 
 class OpenAIOptionsFlow(OptionsFlow):
@@ -682,3 +707,192 @@ def openai_config_option_schema(
         }
     )
     return schema
+
+
+class GrokAITaskSubentryFlowHandler(ConfigSubentryFlow):
+    """Flow for managing Grok AI Task subentries."""
+
+    options: dict[str, Any]
+    _chat_models: list[str] | None = None
+    last_rendered_recommended: bool = True
+
+    @property
+    def _is_new(self) -> bool:
+        """Return if this is a new subentry."""
+        return self.source == "user"
+
+    async def _async_get_chat_models(self) -> list[str]:
+        """List chat models from xAI (cached per subentry flow session)."""
+        if self._chat_models is not None:
+            return self._chat_models
+
+        entry = self._get_entry()
+        api_key = entry.data.get(CONF_API_KEY, "")
+        client = openai.AsyncOpenAI(
+            api_key=api_key,
+            base_url="https://api.x.ai/v1",
+            http_client=get_async_client(self.hass),
+        )
+        models = await async_list_chat_models(client)
+
+        current = self.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        if (
+            isinstance(current, str)
+            and current
+            and current not in models
+            and is_chat_model_id(current)
+        ):
+            models = [current, *models]
+
+        self._chat_models = models
+        return models
+
+    async def async_step_user(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Add a subentry."""
+        self.options = dict(RECOMMENDED_AI_TASK_OPTIONS)
+        self.last_rendered_recommended = self.options.get(CONF_RECOMMENDED, True)
+        return await self.async_step_init()
+
+    async def async_step_reconfigure(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Handle reconfiguration of a subentry."""
+        self.options = dict(self._get_reconfigure_subentry().data)
+        self.last_rendered_recommended = self.options.get(CONF_RECOMMENDED, True)
+        return await self.async_step_init()
+
+    async def async_step_init(
+        self, user_input: dict[str, Any] | None = None
+    ) -> SubentryFlowResult:
+        """Manage AI Task subentry options."""
+        from homeassistant.config_entries import ConfigEntryState
+
+        if self._get_entry().state is not ConfigEntryState.LOADED:
+            return self.async_abort(reason="entry_not_loaded")
+
+        options = self.options
+        errors: dict[str, str] = {}
+        chat_models = await self._async_get_chat_models()
+
+        if user_input is not None:
+            if user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
+                model_val = user_input.get(CONF_CHAT_MODEL)
+                if model_val and (
+                    model_val in UNSUPPORTED_MODELS
+                    or not is_chat_model_id(str(model_val))
+                ):
+                    errors[CONF_CHAT_MODEL] = "model_not_supported"
+
+                if not errors:
+                    name = user_input.pop(CONF_NAME, None)
+                    data = {
+                        CONF_RECOMMENDED: user_input.get(CONF_RECOMMENDED, True),
+                        CONF_CHAT_MODEL: user_input.get(
+                            CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL
+                        ),
+                        CONF_IMAGE_MODEL: user_input.get(
+                            CONF_IMAGE_MODEL, RECOMMENDED_IMAGE_GENERATION_MODEL
+                        ),
+                    }
+                    if not data[CONF_RECOMMENDED]:
+                        if CONF_MAX_TOKENS in user_input:
+                            data[CONF_MAX_TOKENS] = user_input[CONF_MAX_TOKENS]
+                        if CONF_TEMPERATURE in user_input:
+                            data[CONF_TEMPERATURE] = user_input[CONF_TEMPERATURE]
+
+                    if self._is_new:
+                        return self.async_create_entry(
+                            title=name or DEFAULT_AI_TASK_NAME,
+                            data=data,
+                        )
+                    return self.async_update_and_abort(
+                        self._get_entry(),
+                        self._get_reconfigure_subentry(),
+                        data=data,
+                    )
+            else:
+                self.last_rendered_recommended = user_input[CONF_RECOMMENDED]
+                options = {
+                    **dict(options),
+                    **user_input,
+                    CONF_RECOMMENDED: user_input[CONF_RECOMMENDED],
+                }
+                self.options = options
+
+        schema = self._build_schema(
+            options, chat_models, include_name=self._is_new
+        )
+        return self.async_show_form(
+            step_id="init",
+            data_schema=vol.Schema(schema),
+            errors=errors,
+        )
+
+    def _build_schema(
+        self,
+        options: dict[str, Any],
+        chat_models: list[str],
+        *,
+        include_name: bool,
+    ) -> VolDictType:
+        """Build the AI Task subentry form schema."""
+        step_schema: VolDictType = {}
+        if include_name:
+            step_schema[
+                vol.Required(CONF_NAME, default=DEFAULT_AI_TASK_NAME)
+            ] = str
+
+        chat_default = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        image_default = options.get(
+            CONF_IMAGE_MODEL, RECOMMENDED_IMAGE_GENERATION_MODEL
+        )
+
+        step_schema.update(
+            {
+                vol.Optional(
+                    CONF_CHAT_MODEL,
+                    description={"suggested_value": chat_default},
+                    default=chat_default,
+                ): _model_select(
+                    chat_models, chat_default, RECOMMENDED_CHAT_MODEL
+                ),
+                vol.Optional(
+                    CONF_IMAGE_MODEL,
+                    description={"suggested_value": image_default},
+                    default=image_default,
+                ): TextSelector(TextSelectorConfig(type="text")),
+                vol.Required(
+                    CONF_RECOMMENDED,
+                    default=options.get(CONF_RECOMMENDED, True),
+                ): bool,
+            }
+        )
+
+        if not options.get(CONF_RECOMMENDED, True):
+            step_schema.update(
+                {
+                    vol.Optional(
+                        CONF_MAX_TOKENS,
+                        description={
+                            "suggested_value": options.get(CONF_MAX_TOKENS)
+                        },
+                        default=options.get(
+                            CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS
+                        ),
+                    ): int,
+                    vol.Optional(
+                        CONF_TEMPERATURE,
+                        description={
+                            "suggested_value": options.get(CONF_TEMPERATURE)
+                        },
+                        default=options.get(
+                            CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
+                        ),
+                    ): NumberSelector(
+                        NumberSelectorConfig(min=0, max=2, step=0.05)
+                    ),
+                }
+            )
+        return step_schema

@@ -3,21 +3,22 @@
   "name": "xAI Grok Conversation",
   "after_dependencies": [
     "assist_pipeline",
+    "energy",
+    "history",
     "intent",
-    "tts",
-    "stt"
+    "recorder",
+    "rest",
+    "scrape",
+    "stt",
+    "tts"
   ],
   "codeowners": [
     "@braytonstafford"
   ],
   "config_flow": true,
   "dependencies": [
-    "conversation",
-    "energy",
-    "history",
-    "recorder",
-    "rest",
-    "scrape"
+    "ai_task",
+    "conversation"
   ],
   "documentation": "https://github.com/braytonstafford/grok_conversation",
   "integration_type": "service",
@@ -27,5 +28,5 @@
     "openai==2.45.0",
     "voluptuous-openapi"
   ],
-  "version": "1.8.0"
+  "version": "1.9.0"
 }
