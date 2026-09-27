@@ -18,44 +18,71 @@ generate_image:
           multiline: true
     model:
       name: "Model"
-      description: "Image model override (default grok-imagine-image)"
+      description: "Image model (default grok-imagine-image; xAI recommends grok-imagine-image-2.0)"
       required: false
       selector:
         text:
-    size:
-      name: "Size"
-      description: "The size of the image to generate"
+    aspect_ratio:
+      name: "Aspect ratio"
+      description: "Image aspect ratio (omit for xAI auto)"
       required: false
-      example: "1024x1024"
-      default: "1024x1024"
       selector:
         select:
           options:
-            - "1024x1024"
-            - "1024x1792"
-            - "1792x1024"
+            - "1:1"
+            - "3:4"
+            - "4:3"
+            - "9:16"
+            - "16:9"
+            - "2:3"
+            - "3:2"
+            - "9:19.5"
+            - "19.5:9"
+            - "9:20"
+            - "20:9"
+            - "1:2"
+            - "2:1"
+            - "21:9"
+            - "5:2"
+            - "auto"
+    resolution:
+      name: "Resolution"
+      description: "Image resolution (1k default on xAI; 2k available)"
+      required: false
+      selector:
+        select:
+          options:
+            - "1k"
+            - "2k"
     quality:
       name: "Quality"
-      description: "The quality of the image that will be generated"
+      description: "Image quality (low/medium/auto). Only applies to grok-imagine-image-2.0"
       required: false
-      example: "standard"
-      default: "standard"
       selector:
         select:
           options:
-            - "standard"
-            - "hd"
-    style:
-      name: "Style"
-      description: "The style of the generated image"
+            - "low"
+            - "medium"
+            - "auto"
+    n:
+      name: "Number of images"
+      description: "How many images to generate (1–10)"
       required: false
-      example: "vivid"
-      default: "vivid"
+      default: 1
+      selector:
+        number:
+          min: 1
+          max: 10
+    response_format:
+      name: "Response format"
+      description: "Return a temporary URL or base64 JSON"
+      required: false
+      default: "url"
       selector:
         select:
           options:
-            - "vivid"
-            - "natural"
+            - "url"
+            - "b64_json"
 
 generate_content:
   name: "Generate content"
@@ -254,6 +281,7 @@ photo_analysis:
           multiline: true
     model:
       name: "Vision model"
+      description: "Vision model override (default grok-4.3, or the Vision model option)"
       required: false
       selector:
         text:
@@ -294,6 +322,7 @@ query_image:
           integration: grok_conversation
     model:
       name: "Model"
+      description: "Vision model override (default grok-4.3, or the Vision model option)"
       required: false
       selector:
         text:

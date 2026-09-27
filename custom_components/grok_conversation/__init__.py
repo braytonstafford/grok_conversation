@@ -40,6 +40,7 @@ from .api_helpers import (
 from .const import (
     CONF_CHAT_MODEL,
     CONF_FILENAMES,
+    CONF_IMAGE_MODEL,
     CONF_LIVE_SEARCH,
     CONF_LOCATION_CONTEXT,
     CONF_MAX_TOKENS,
@@ -48,9 +49,14 @@ from .const import (
     CONF_SHOW_CITATIONS,
     CONF_TEMPERATURE,
     CONF_TOP_P,
+    CONF_VISION_MODEL,
     DEFAULT_AI_TASK_NAME,
     DOMAIN,
+    IMAGE_ASPECT_RATIOS,
     IMAGE_QUALITIES,
+    IMAGE_QUALITY_DOCUMENTED,
+    IMAGE_RESOLUTIONS,
+    IMAGE_RESPONSE_FORMATS,
     IMAGE_SIZES,
     IMAGE_STYLES,
     LIVE_SEARCH_OFF,
@@ -62,6 +68,7 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     RECOMMENDED_VISION_MODEL,
+    RETIRED_VISION_MODELS,
     SERVICE_ASK,
     SERVICE_CLEAR_MEMORY,
     SERVICE_GENERATE_CONTENT,
@@ -70,6 +77,7 @@ from .const import (
     SERVICE_PHOTO_ANALYSIS,
     SERVICE_QUERY_IMAGE,
     SERVICE_RESET_STATS,
+    SIZE_TO_ASPECT_RATIO,
 )
 from .usage import UsageTracker
 from .voice_api import async_validate_voice_access
@@ -85,6 +93,145 @@ CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 OpenAIConfigEntry = ConfigEntry  # runtime_data: openai.AsyncClient
 
+# One deprecation WARNING per field per Home Assistant run.
+_DEPRECATED_FIELD_WARNED: set[str] = set()
+_RETIRED_VISION_WARNED = False
+
+
+def _warn_deprecated_image_field(field: str, message: str) -> None:
+    """Log a one-shot deprecation warning for a generate_image field."""
+    if field in _DEPRECATED_FIELD_WARNED:
+        return
+    _DEPRECATED_FIELD_WARNED.add(field)
+    LOGGER.warning(message)
+
+
+def build_image_generate_kwargs(call_data: dict[str, Any], model: str) -> dict[str, Any]:
+    """Build kwargs for client.images.generate from service call data.
+
+    Never sends ``size`` or ``style``. Sends ``quality`` only for documented
+    values (``low``/``medium``/``auto``) via ``extra_body``.
+    """
+    aspect_ratio = call_data.get("aspect_ratio")
+    size = call_data.get("size")
+    style = call_data.get("style")
+    quality = call_data.get("quality")
+    resolution = call_data.get("resolution")
+    n = int(call_data.get("n", 1))
+    response_format = call_data.get("response_format", "url")
+
+    if style is not None:
+        _warn_deprecated_image_field(
+            "style",
+            "generate_image field 'style' is deprecated and ignored by xAI; "
+            "it will be removed in a future release.",
+        )
+
+    if size is not None:
+        mapped = SIZE_TO_ASPECT_RATIO.get(size)
+        if aspect_ratio is None and mapped:
+            aspect_ratio = mapped
+            _warn_deprecated_image_field(
+                "size",
+                "generate_image field 'size' is deprecated; mapped "
+                f"'{size}' → aspect_ratio '{mapped}'. "
+                "It will be removed in a future release.",
+            )
+        else:
+            _warn_deprecated_image_field(
+                "size",
+                "generate_image field 'size' is deprecated and ignored "
+                f"(aspect_ratio already set to '{aspect_ratio}'). "
+                "It will be removed in a future release.",
+            )
+
+    if quality is not None and quality not in IMAGE_QUALITY_DOCUMENTED:
+        _warn_deprecated_image_field(
+            "quality",
+            "generate_image field 'quality' value "
+            f"'{quality}' is deprecated and ignored (use low|medium|auto for "
+            "grok-imagine-image-2.0). It will be removed in a future release.",
+        )
+        quality = None
+
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "prompt": call_data[CONF_PROMPT],
+        "n": n,
+        "response_format": response_format,
+    }
+    extra_body: dict[str, Any] = {}
+    if aspect_ratio is not None:
+        extra_body["aspect_ratio"] = aspect_ratio
+    if resolution is not None:
+        extra_body["resolution"] = resolution
+    if quality is not None:
+        extra_body["quality"] = quality
+    if extra_body:
+        kwargs["extra_body"] = extra_body
+    return kwargs
+
+
+def format_images_response(
+    response: ImagesResponse,
+    *,
+    model: str,
+    response_format: str,
+) -> dict[str, Any]:
+    """Format an ImagesResponse into a backward-compatible service result."""
+    if not response.data:
+        raise HomeAssistantError("Image generation returned empty data")
+
+    images: list[dict[str, Any]] = []
+    for item in response.data:
+        entry: dict[str, Any] = {}
+        url = getattr(item, "url", None)
+        b64 = getattr(item, "b64_json", None)
+        mime = getattr(item, "mime_type", None)
+        if url:
+            entry["url"] = url
+        if b64:
+            entry["b64_json"] = b64
+        if mime:
+            entry["mime_type"] = mime
+        if "url" not in entry and "b64_json" not in entry:
+            raise HomeAssistantError(
+                "Image generation response missing url and b64_json"
+            )
+        images.append(entry)
+
+    result: dict[str, Any] = {"model": model, "images": images}
+    if response_format == "url" and images[0].get("url"):
+        result["url"] = images[0]["url"]
+    revised = getattr(response.data[0], "revised_prompt", None)
+    if revised:
+        result["revised_prompt"] = revised
+    return result
+
+
+def resolve_service_vision_model(
+    call_model: str | None,
+    entry_options: MappingProxyType[str, Any] | dict[str, Any],
+) -> str:
+    """Resolve vision model for image services with retired-id guard."""
+    global _RETIRED_VISION_WARNED
+
+    model = (
+        call_model
+        or entry_options.get(CONF_VISION_MODEL)
+        or RECOMMENDED_VISION_MODEL
+    )
+    if model in RETIRED_VISION_MODELS:
+        if not _RETIRED_VISION_WARNED:
+            _RETIRED_VISION_WARNED = True
+            LOGGER.warning(
+                "Vision model '%s' is retired; using '%s' instead. "
+                "Update your automation or integration options.",
+                model,
+                RECOMMENDED_VISION_MODEL,
+            )
+        return RECOMMENDED_VISION_MODEL
+    return model
 
 
 def encode_file(file_path: str) -> tuple[str, str]:
@@ -150,26 +297,19 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         entry = _validate_config_entry(hass, call.data["config_entry"])
         client = _entry_client(entry)
         model = call.data.get("model") or entry.options.get(
-            "image_model", RECOMMENDED_IMAGE_GENERATION_MODEL
+            CONF_IMAGE_MODEL, RECOMMENDED_IMAGE_GENERATION_MODEL
         )
+        response_format = call.data.get("response_format", "url")
+        kwargs = build_image_generate_kwargs(dict(call.data), model)
 
         try:
-            response: ImagesResponse = await client.images.generate(
-                model=model,
-                prompt=call.data[CONF_PROMPT],
-                size=call.data.get("size", "1024x1024"),
-                quality=call.data.get("quality", "standard"),
-                style=call.data.get("style", "vivid"),
-                response_format="url",
-                n=1,
-            )
+            response: ImagesResponse = await client.images.generate(**kwargs)
         except openai.OpenAIError as err:
             raise HomeAssistantError(f"Error generating image: {err}") from err
 
-        image_data = response.data[0]
-        result: dict[str, Any] = {"url": image_data.url, "model": model}
-        if getattr(image_data, "revised_prompt", None):
-            result["revised_prompt"] = image_data.revised_prompt
+        result = format_images_response(
+            response, model=model, response_format=response_format
+        )
         await _record_usage(
             hass,
             entry.entry_id,
@@ -223,8 +363,8 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
             await hass.async_add_executor_job(append_files_to_content)
 
         if has_images:
-            model = call.data.get("model") or entry.options.get(
-                "vision_model", RECOMMENDED_VISION_MODEL
+            model = resolve_service_vision_model(
+                call.data.get("model"), entry.options
             )
         else:
             model = call.data.get("model") or entry.options.get(
@@ -374,9 +514,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         """Analyze one or more images with Grok vision."""
         entry = _validate_config_entry(hass, call.data["config_entry"])
         client = _entry_client(entry)
-        model = call.data.get("model") or entry.options.get(
-            "vision_model", RECOMMENDED_VISION_MODEL
-        )
+        model = resolve_service_vision_model(call.data.get("model"), entry.options)
         prompt = call.data["prompt"]
         images = call.data.get("images") or []
         if isinstance(images, str):
@@ -660,9 +798,18 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 vol.Required("config_entry"): _cfg_entry_selector(),
                 vol.Required(CONF_PROMPT): cv.string,
                 vol.Optional("model"): cv.string,
-                vol.Optional("size", default="1024x1024"): vol.In(IMAGE_SIZES),
-                vol.Optional("quality", default="standard"): vol.In(IMAGE_QUALITIES),
-                vol.Optional("style", default="vivid"): vol.In(IMAGE_STYLES),
+                vol.Optional("aspect_ratio"): vol.In(IMAGE_ASPECT_RATIOS),
+                vol.Optional("resolution"): vol.In(IMAGE_RESOLUTIONS),
+                vol.Optional("quality"): vol.In(IMAGE_QUALITIES),
+                vol.Optional("n", default=1): vol.All(
+                    vol.Coerce(int), vol.Range(min=1, max=10)
+                ),
+                vol.Optional("response_format", default="url"): vol.In(
+                    IMAGE_RESPONSE_FORMATS
+                ),
+                # Deprecated — still validated so existing automations work
+                vol.Optional("size"): vol.In(IMAGE_SIZES),
+                vol.Optional("style"): vol.In(IMAGE_STYLES),
             }
         ),
         supports_response=SupportsResponse.ONLY,
@@ -717,7 +864,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
                 vol.Required("config_entry"): _cfg_entry_selector(),
                 vol.Required("prompt"): cv.string,
                 vol.Required("images"): vol.All(cv.ensure_list, [vol.Any(cv.string, dict)]),
-                vol.Optional("model", default=RECOMMENDED_VISION_MODEL): cv.string,
+                vol.Optional("model"): cv.string,
                 vol.Optional("max_tokens", default=300): cv.positive_int,
             }
         ),
@@ -844,7 +991,7 @@ def _add_ai_task_subentry(hass: HomeAssistant, entry: ConfigEntry) -> None:
 
 
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate config entry (add AI Task subentry; preserve options/entity IDs)."""
+    """Migrate config entry (AI Task subentry + retired vision model)."""
     LOGGER.debug(
         "Migrating %s from version %s.%s",
         entry.entry_id,
@@ -858,6 +1005,21 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.version == 1 and entry.minor_version < 2:
         _add_ai_task_subentry(hass, entry)
         hass.config_entries.async_update_entry(entry, minor_version=2)
+
+    if entry.version == 1 and entry.minor_version < 3:
+        options = dict(entry.options)
+        update_kwargs: dict[str, Any] = {"minor_version": 3}
+        vision = options.get(CONF_VISION_MODEL)
+        if vision in RETIRED_VISION_MODELS:
+            options[CONF_VISION_MODEL] = RECOMMENDED_VISION_MODEL
+            update_kwargs["options"] = options
+            LOGGER.info(
+                "Migrated retired vision_model '%s' → '%s' for entry %s",
+                vision,
+                RECOMMENDED_VISION_MODEL,
+                entry.entry_id,
+            )
+        hass.config_entries.async_update_entry(entry, **update_kwargs)
 
     LOGGER.debug(
         "Migration to version %s.%s successful",

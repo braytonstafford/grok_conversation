@@ -57,6 +57,7 @@
           "chat_model": "Primary chat model",
           "fast_model": "Fast model (auto-routing)",
           "fallback_model": "Fallback model",
+          "vision_model": "Vision model",
           "max_tokens": "Maximum tokens to return in response",
           "temperature": "Temperature",
           "top_p": "Top P",
@@ -88,6 +89,7 @@
           "fast_model": "Used when auto-routing detects a short/simple command. List is loaded live from xAI.",
           "fallback_model": "Tried automatically if the primary model errors. List is loaded live from xAI.",
           "chat_model": "Main conversation model. Options come from GET /v1/models (image/voice models filtered out). You can also type a model id.",
+          "vision_model": "Model used for photo_analysis, query_image, and generate_content with image attachments. Default grok-4.3.",
           "budget_warn_usd": "Fires grok_conversation_budget_warning when estimated spend crosses this USD value.",
           "enable_tts": "Registers an xAI Grok TTS engine selectable under Settings → Voice assistants.",
           "enable_stt": "Registers an xAI Grok STT engine selectable under Settings → Voice assistants.",
@@ -99,6 +101,7 @@
     },
     "error": {
       "model_not_supported": "This model is not supported, please select a different model",
+      "model_retired": "This vision model has been retired by xAI. Choose a current image-capable model such as grok-4.3.",
       "llm_api_not_found": "Could not match that LLM HASS API. Pick “Assist” / Home Assistant from the list (not a free-text value), or leave No control for chat-only."
     }
   },
@@ -118,19 +121,27 @@
         },
         "model": {
           "name": "Model",
-          "description": "Image model override"
+          "description": "Image model (default grok-imagine-image; xAI recommends grok-imagine-image-2.0)"
         },
-        "size": {
-          "name": "Size",
-          "description": "The size of the image to generate"
+        "aspect_ratio": {
+          "name": "Aspect ratio",
+          "description": "Image aspect ratio (omit for xAI auto)"
+        },
+        "resolution": {
+          "name": "Resolution",
+          "description": "Image resolution (1k or 2k)"
         },
         "quality": {
           "name": "Quality",
-          "description": "The quality of the image that will be generated"
+          "description": "Image quality (low/medium/auto). Only applies to grok-imagine-image-2.0"
         },
-        "style": {
-          "name": "Style",
-          "description": "The style of the generated image"
+        "n": {
+          "name": "Number of images",
+          "description": "How many images to generate (1–10)"
+        },
+        "response_format": {
+          "name": "Response format",
+          "description": "Return a temporary URL or base64 JSON"
         }
       }
     },

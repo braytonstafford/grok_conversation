@@ -51,12 +51,22 @@ SERVICE_GENERATE_CONTENT = "generate_content"
 RECOMMENDED_CHAT_MODEL = "grok-4.3-latest"
 RECOMMENDED_FAST_MODEL = "grok-4-1-fast-non-reasoning"
 RECOMMENDED_FALLBACK_MODEL = "grok-3-mini-fast"
-# grok-2-vision-1212 is retired; current Grok 4.x chat models accept image input
-# (see https://docs.x.ai/docs/models — Image input models).
-RECOMMENDED_VISION_MODEL = "grok-4.3-latest"
+# Cheapest documented image-capable chat model (text+image → text).
+# See https://docs.x.ai/developers/models/grok-4.3
+RECOMMENDED_VISION_MODEL = "grok-4.3"
 RECOMMENDED_IMAGE_GENERATION_MODEL = "grok-imagine-image"
 # Keep legacy alias used elsewhere
 RECOMMENDED_IMAGE_MODEL = RECOMMENDED_IMAGE_GENERATION_MODEL
+
+# Retired dedicated vision model ids (no longer listed by xAI).
+RETIRED_VISION_MODELS = frozenset(
+    {
+        "grok-2-vision-1212",
+        "grok-2-vision",
+        "grok-2-vision-latest",
+        "grok-vision-beta",
+    }
+)
 
 # AI Task subentry defaults (generate_image deferred; image_model kept for schema stability)
 DEFAULT_AI_TASK_NAME = "Grok AI Task"
@@ -85,10 +95,39 @@ RECOMMENDED_BUDGET_WARN_USD = 0.0  # 0 = disabled
 
 UNSUPPORTED_MODELS: list[str] = []
 
-# Image generation constants
+# Image generation constants (xAI Images API)
+# Deprecated size values kept for backward-compatible service validation.
 IMAGE_SIZES = ("1024x1024", "1024x1792", "1792x1024")
-IMAGE_QUALITIES = ("standard", "hd")
-IMAGE_STYLES = ("vivid", "natural")
+SIZE_TO_ASPECT_RATIO = {
+    "1024x1024": "1:1",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9",
+}
+# Documented aspect ratios for POST /v1/images/generations
+IMAGE_ASPECT_RATIOS = (
+    "1:1",
+    "3:4",
+    "4:3",
+    "9:16",
+    "16:9",
+    "2:3",
+    "3:2",
+    "9:19.5",
+    "19.5:9",
+    "9:20",
+    "20:9",
+    "1:2",
+    "2:1",
+    "21:9",
+    "5:2",
+    "auto",
+)
+IMAGE_RESOLUTIONS = ("1k", "2k")
+# Documented (2.0-only) + legacy DALL·E values still accepted for validation
+IMAGE_QUALITIES = ("low", "medium", "auto", "standard", "hd")
+IMAGE_QUALITY_DOCUMENTED = frozenset({"low", "medium", "auto"})
+IMAGE_STYLES = ("vivid", "natural")  # deprecated; accepted and ignored
+IMAGE_RESPONSE_FORMATS = ("url", "b64_json")
 
 # Live search modes (xAI Responses API server tools)
 LIVE_SEARCH_OFF = "off"
