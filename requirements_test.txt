@@ -5,9 +5,13 @@ voluptuous-openapi
 pytest-homeassistant-custom-component>=0.13.317
 # Component transitive requirements so CI can import platforms without
 # waiting on on-demand installs.
+# tts → ffmpeg (pulled in via voice_const / ATTR_VOICE at import time)
+ha-ffmpeg==3.2.2
+# conversation
 gazetteer-matcher==1.1.0
 hassil==3.12.1
 home-assistant-intents==2026.8.28
+# camera / media helpers used by attachment + AI Task paths
 PyTurboJPEG==1.8.3
 mutagen==1.48.1
 xmltodict==1.0.4
