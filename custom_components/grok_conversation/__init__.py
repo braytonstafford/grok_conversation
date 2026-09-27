@@ -103,6 +103,7 @@ OpenAIConfigEntry = ConfigEntry  # runtime_data: openai.AsyncClient
 # One deprecation WARNING per field per Home Assistant run.
 _DEPRECATED_FIELD_WARNED: set[str] = set()
 _RETIRED_VISION_WARNED = False
+_QUALITY_UNSUPPORTED_WARNED = False
 
 
 def _warn_deprecated_image_field(field: str, message: str) -> None:
@@ -113,12 +114,29 @@ def _warn_deprecated_image_field(field: str, message: str) -> None:
     LOGGER.warning(message)
 
 
+def model_supports_image_quality(model: str | None) -> bool:
+    """Return True if ``quality`` is documented for this imagine model.
+
+    xAI only supports ``quality`` on ``grok-imagine-image-2.0`` (and dated /
+    ``-latest`` aliases that start with ``grok-imagine-image-2.0-``).
+    """
+    mid = (model or "").strip().lower()
+    if not mid:
+        return False
+    return mid == "grok-imagine-image-2.0" or mid.startswith(
+        "grok-imagine-image-2.0-"
+    )
+
+
 def build_image_generate_kwargs(call_data: dict[str, Any], model: str) -> dict[str, Any]:
     """Build kwargs for client.images.generate from service call data.
 
-    Never sends ``size`` or ``style``. Sends ``quality`` only for documented
-    values (``low``/``medium``/``auto``) via ``extra_body``.
+    Never sends ``size`` or ``style``. Sends documented ``quality``
+    (``low``/``medium``/``auto``) via ``extra_body`` only when the model
+    supports it (``grok-imagine-image-2.0``).
     """
+    global _QUALITY_UNSUPPORTED_WARNED
+
     aspect_ratio = call_data.get("aspect_ratio")
     size = call_data.get("size")
     style = call_data.get("style")
@@ -159,6 +177,16 @@ def build_image_generate_kwargs(call_data: dict[str, Any], model: str) -> dict[s
             f"'{quality}' is deprecated and ignored (use low|medium|auto for "
             "grok-imagine-image-2.0). It will be removed in a future release.",
         )
+        quality = None
+
+    if quality is not None and not model_supports_image_quality(model):
+        if not _QUALITY_UNSUPPORTED_WARNED:
+            _QUALITY_UNSUPPORTED_WARNED = True
+            LOGGER.warning(
+                "generate_image field 'quality' is only supported for "
+                "grok-imagine-image-2.0; ignoring for model '%s'.",
+                model,
+            )
         quality = None
 
     kwargs: dict[str, Any] = {

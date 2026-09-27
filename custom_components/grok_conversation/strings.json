@@ -89,7 +89,7 @@
           "fast_model": "Used when auto-routing detects a short/simple command. Default grok-4.3 (no separate fast model after the May 15 2026 retirement).",
           "fallback_model": "Tried automatically if the primary model errors. Default grok-4.3.",
           "chat_model": "Main conversation model. Options come from GET /v1/models (image/voice models filtered out). You can also type a model id.",
-          "vision_model": "Fallback for image services when the chat model cannot take images. Prefer chat model when it supports images. Default grok-4.3.",
+          "vision_model": "Fallback for image services and AI Task attachments when the chat model cannot take images. An image-capable chat model always wins; this option is only used as a fallback. Default grok-4.3.",
           "budget_warn_usd": "Fires grok_conversation_budget_warning when estimated spend crosses this USD value.",
           "enable_tts": "Registers an xAI Grok TTS engine selectable under Settings → Voice assistants.",
           "enable_stt": "Registers an xAI Grok STT engine selectable under Settings → Voice assistants.",
