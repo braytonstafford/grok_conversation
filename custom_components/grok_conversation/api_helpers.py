@@ -249,8 +249,9 @@ async def async_chat_completion(
     tool_choice: str | None = None,
     reasoning_effort: str | None = None,
     user: str | None = None,
+    response_format: dict[str, Any] | None = None,
 ) -> Any:
-    """Call chat.completions.create with optional reasoning_effort."""
+    """Call chat.completions.create with optional reasoning_effort / response_format."""
     args: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -267,13 +268,20 @@ async def async_chat_completion(
     if tools:
         args["tools"] = tools
         args["tool_choice"] = tool_choice or "auto"
+    if response_format is not None:
+        args["response_format"] = response_format
     if (
         reasoning_effort
         and reasoning_effort != "none"
         and "reasoning" in model.lower()
     ):
         args["reasoning_effort"] = reasoning_effort
-    LOGGER.debug("chat.completions.create model=%s tools=%s", model, bool(tools))
+    LOGGER.debug(
+        "chat.completions.create model=%s tools=%s response_format=%s",
+        model,
+        bool(tools),
+        bool(response_format),
+    )
     return await client.chat.completions.create(**args)
 
 

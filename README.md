@@ -1,8 +1,8 @@
 # xAI Grok Conversation
 
-**Home Assistant conversation agent + cloud Voice TTS/STT powered by xAI Grok.**
+**Home Assistant conversation agent + cloud Voice TTS/STT + AI Task, powered by xAI Grok.**
 
-One HACS install → **Conversation agent**, **Speech-to-text**, and **Text-to-speech** engines that use your existing xAI API key.
+One HACS install → **Conversation agent**, **Speech-to-text**, **Text-to-speech**, and **AI Task** engines that use your existing xAI API key.
 
 [![hacs_badge](https://img.shields.io/badge/HACS-Custom-orange.svg)](https://github.com/braytonstafford/grok_conversation)
 [![GitHub release](https://img.shields.io/github/v/release/braytonstafford/grok_conversation)](https://github.com/braytonstafford/grok_conversation/releases)
@@ -17,6 +17,7 @@ One HACS install → **Conversation agent**, **Speech-to-text**, and **Text-to-s
 | **Conversation** | Voice assistants → Conversation agent → **Grok** | Chat / tools / live search |
 | **Speech-to-text** | Voice assistants → Speech-to-text → **xAI Grok** | `POST https://api.x.ai/v1/stt` |
 | **Text-to-speech** | Voice assistants → Text-to-speech → **xAI Grok** | `POST https://api.x.ai/v1/tts` |
+| **AI Task** | Automations → `ai_task.generate_data` → **Grok AI Task** | Chat Completions + structured output / attachments |
 
 Replace Piper / speech-to-phrase with Grok cloud quality while keeping your Satellite1 (or any Assist pipeline) wake word local.
 
@@ -27,12 +28,31 @@ Replace Piper / speech-to-phrase with Grok cloud quality while keeping your Sate
 | Feature | Description |
 | --- | --- |
 | **Assist / LLM tools** | Control exposed HA entities via the standard LLM HASS API |
+| **AI Task** | `ai_task.generate_data` with free text, structured JSON, and image attachments |
 | **xAI TTS** | 25+ expressive voices (Eve, Ara, Rex, Luna, …), speed, languages |
 | **xAI STT** | Multilingual transcription (25+ languages), PCM/WAV from Assist satellites |
 | **Voice API check** | Probes the key for Voice access at setup; warns if chat-only |
 | **Interaction modes** | `tools` · `pipeline` · `chat_only` |
 | **Live Search** | Web / X / Full + citations |
 | **Services** | `ask`, `photo_analysis`, `home_briefing`, image/content generation |
+
+### Example: AI Task automation
+
+```yaml
+- action: ai_task.generate_data
+  data:
+    task_name: Driveway check
+    entity_id: ai_task.grok_ai_task
+    instructions: How many cars are in the driveway?
+    attachments:
+      media_content_id: media-source://camera/camera.driveway
+      media_content_type: image/jpeg
+    structure:
+      cars:
+        selector:
+          number:
+  response_variable: result
+```
 
 ---
 
@@ -81,6 +101,7 @@ Setup probes your key against the Voice endpoints. If chat works but TTS/STT fai
 | Default STT language | Formatting language for transcripts |
 | Live Search | off / web / x / full |
 | Interaction mode | tools / pipeline / chat_only |
+| AI Task subentry | Name, chat model, optional image model (generate_image deferred) |
 
 ---
 
@@ -107,21 +128,25 @@ See 1.6.2 notes — real tool payloads + ToolInput fix. Set LLM HASS API to Assi
 
 ```text
 custom_components/grok_conversation/
-  __init__.py          # setup + services + platforms
+  __init__.py          # setup + services + platforms + migration
+  entity.py            # shared LLM base (tool loop, structured output, attachments)
   conversation.py      # Assist conversation agent
+  ai_task.py           # AI Task entity (generate_data)
   tts.py               # TextToSpeechEntity → /v1/tts
   stt.py               # SpeechToTextEntity → /v1/stt
   voice_api.py         # HTTP client + Voice probe
   voice_const.py       # voices + languages
-  config_flow.py
+  config_flow.py       # options + ai_task_data subentry
   sensor.py / usage.py
 ```
 
-CI: Hassfest + HACS validation on push/PR/nightly.
+CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 
 ---
 
 ## Version
+
+**1.9.0** — AI Task platform (`generate_data` + structured output + image attachments). Shared LLM entity base. Config subentry + migration. `generate_image` deferred to a follow-up.
 
 **1.8.0** — Pipeline live-search deny-list (#30); satellite TTS prewarm before continue (#31); persona on search pass + no spoken citations (#32). Thanks @CodyJon.
 

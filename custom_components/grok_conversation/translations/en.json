@@ -14,6 +14,38 @@
       }
     }
   },
+  "config_subentries": {
+    "ai_task_data": {
+      "initiate_flow": {
+        "user": "Add AI Task",
+        "reconfigure": "Reconfigure AI Task"
+      },
+      "entry_type": "AI Task",
+      "step": {
+        "init": {
+          "data": {
+            "name": "Name",
+            "chat_model": "Chat model",
+            "image_model": "Image model (optional, for future generate_image)",
+            "recommended": "Use recommended sampling settings",
+            "max_tokens": "Maximum tokens",
+            "temperature": "Temperature"
+          },
+          "data_description": {
+            "chat_model": "Model used for ai_task.generate_data. Options come from GET /v1/models.",
+            "image_model": "Reserved for ai_task.generate_image (deferred). Default grok-imagine-image.",
+            "recommended": "When enabled, uses default max tokens and temperature."
+          }
+        }
+      },
+      "error": {
+        "model_not_supported": "This model is not supported, please select a different model"
+      },
+      "abort": {
+        "entry_not_loaded": "Cannot configure while the integration is not loaded"
+      }
+    }
+  },
   "options": {
     "step": {
       "init": {

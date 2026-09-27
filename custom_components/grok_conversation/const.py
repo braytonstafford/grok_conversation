@@ -51,10 +51,23 @@ SERVICE_GENERATE_CONTENT = "generate_content"
 RECOMMENDED_CHAT_MODEL = "grok-4.3-latest"
 RECOMMENDED_FAST_MODEL = "grok-4-1-fast-non-reasoning"
 RECOMMENDED_FALLBACK_MODEL = "grok-3-mini-fast"
-RECOMMENDED_VISION_MODEL = "grok-2-vision-1212"
+# grok-2-vision-1212 is retired; current Grok 4.x chat models accept image input
+# (see https://docs.x.ai/docs/models — Image input models).
+RECOMMENDED_VISION_MODEL = "grok-4.3-latest"
 RECOMMENDED_IMAGE_GENERATION_MODEL = "grok-imagine-image"
 # Keep legacy alias used elsewhere
 RECOMMENDED_IMAGE_MODEL = RECOMMENDED_IMAGE_GENERATION_MODEL
+
+# AI Task subentry defaults (generate_image deferred; image_model kept for schema stability)
+DEFAULT_AI_TASK_NAME = "Grok AI Task"
+# Structured / longer AI Task replies need more headroom than Assist (600).
+RECOMMENDED_AI_TASK_MAX_TOKENS = 2500
+RECOMMENDED_AI_TASK_OPTIONS = {
+    CONF_RECOMMENDED: True,
+    CONF_CHAT_MODEL: RECOMMENDED_CHAT_MODEL,
+    CONF_IMAGE_MODEL: RECOMMENDED_IMAGE_GENERATION_MODEL,
+    CONF_MAX_TOKENS: RECOMMENDED_AI_TASK_MAX_TOKENS,
+}
 
 RECOMMENDED_MAX_TOKENS = 600
 RECOMMENDED_REASONING_EFFORT = "low"
