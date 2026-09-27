@@ -1,12 +1,17 @@
 """Regression tests for conversation live-search helpers (v1.8.0 fixes)."""
 
+import pytest
+
 from custom_components.grok_conversation.api_helpers import (
     looks_like_non_search_query,
     should_use_live_search,
 )
 from custom_components.grok_conversation.const import (
     CONF_VISION_MODEL,
+    RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_VISION_MODEL,
+    _RETIRED_CHAT_WARNED,
+    remap_retired_chat_model,
 )
 from custom_components.grok_conversation.entity import (
     model_supports_vision,
@@ -60,16 +65,28 @@ def test_vision_model_detection() -> None:
     assert not model_supports_vision("grok-2-vision-1212")
     assert not model_supports_vision("grok-imagine-image")
     assert not model_supports_vision("grok-3-mini-fast")
+    assert not model_supports_vision("text-only-custom")
 
 
 def test_resolve_vision_model_prefers_chat_model() -> None:
     """Attachment routing keeps the subentry/chat model when it supports images."""
     assert (
         resolve_vision_model(
-            {CONF_VISION_MODEL: "grok-4.3-latest"},
-            "grok-4-1-fast-non-reasoning",
+            {CONF_VISION_MODEL: "grok-4.3"},
+            "grok-4.6",
         )
-        == "grok-4-1-fast-non-reasoning"
+        == "grok-4.6"
+    )
+
+
+def test_resolve_vision_model_falls_back_when_chat_text_only() -> None:
+    """When chat cannot take images, use configured vision_model."""
+    assert (
+        resolve_vision_model(
+            {CONF_VISION_MODEL: "grok-4.6"},
+            "text-only-custom",
+        )
+        == "grok-4.6"
     )
 
 
@@ -78,8 +95,53 @@ def test_resolve_vision_model_skips_retired_vision() -> None:
     assert (
         resolve_vision_model(
             {CONF_VISION_MODEL: "grok-2-vision-1212"},
-            "grok-3-mini-fast",
+            "text-only-custom",
         )
         == RECOMMENDED_VISION_MODEL
     )
     assert RECOMMENDED_VISION_MODEL.startswith("grok-4")
+
+
+def test_resolve_vision_model_remaps_retired_fast_chat(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Retired fast chat model is remapped before vision preference."""
+    _RETIRED_CHAT_WARNED.clear()
+    with caplog.at_level("WARNING"):
+        assert (
+            resolve_vision_model(
+                {CONF_VISION_MODEL: "grok-4.6"},
+                "grok-4-1-fast-non-reasoning",
+            )
+            == RECOMMENDED_CHAT_MODEL
+        )
+    assert "retired" in caplog.text.lower()
+
+
+def test_remap_retired_fast_and_fallback_models(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Runtime remap for May 15 retired fast/fallback defaults."""
+    from custom_components.grok_conversation.const import (
+        RECOMMENDED_FALLBACK_MODEL,
+        RECOMMENDED_FAST_MODEL,
+    )
+
+    _RETIRED_CHAT_WARNED.clear()
+    with caplog.at_level("WARNING"):
+        assert (
+            remap_retired_chat_model(
+                "grok-4-1-fast-non-reasoning", RECOMMENDED_FAST_MODEL
+            )
+            == RECOMMENDED_FAST_MODEL
+        )
+        assert (
+            remap_retired_chat_model("grok-3-mini-fast", RECOMMENDED_FALLBACK_MODEL)
+            == RECOMMENDED_FALLBACK_MODEL
+        )
+    assert RECOMMENDED_FAST_MODEL == "grok-4.3"
+    assert RECOMMENDED_FALLBACK_MODEL == "grok-4.3"
+    assert "grok-4-1-fast-non-reasoning" in caplog.text
+    assert "grok-3-mini-fast" in caplog.text
+    # Current models pass through
+    assert remap_retired_chat_model("grok-4.6", RECOMMENDED_FAST_MODEL) == "grok-4.6"

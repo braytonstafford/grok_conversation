@@ -81,8 +81,11 @@ from .const import (
     RECOMMENDED_TOP_P,
     RECOMMENDED_VISION_MODEL,
     RECOMMENDED_VOICE_OPTIMIZED,
+    RETIRED_CHAT_MODELS,
+    RETIRED_MODELS,
     RETIRED_VISION_MODELS,
     UNSUPPORTED_MODELS,
+    effective_model_choice,
 )
 from .api_helpers import async_list_chat_models, is_chat_model_id
 from .voice_const import (
@@ -257,8 +260,11 @@ class OpenAIOptionsFlow(OptionsFlow):
             http_client=get_async_client(self.hass),
         )
         models = await async_list_chat_models(client)
+        # Never offer retired ids in the picker
+        models = [m for m in models if m not in RETIRED_MODELS]
 
         # Ensure currently configured models always appear even if filtered out
+        # (unless they are retired — those use the recommended default instead).
         options = self.config_entry.options
         for key, default in (
             (CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL),
@@ -266,7 +272,7 @@ class OpenAIOptionsFlow(OptionsFlow):
             (CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL),
             (CONF_VISION_MODEL, RECOMMENDED_VISION_MODEL),
         ):
-            current = options.get(key, default)
+            current = effective_model_choice(options.get(key), default)
             if (
                 isinstance(current, str)
                 and current
@@ -385,7 +391,9 @@ class OpenAIOptionsFlow(OptionsFlow):
                     model_val = user_input.get(model_key)
                     if not model_val:
                         continue
-                    if model_val in UNSUPPORTED_MODELS or not is_chat_model_id(
+                    if model_val in RETIRED_CHAT_MODELS:
+                        errors[model_key] = "model_retired"
+                    elif model_val in UNSUPPORTED_MODELS or not is_chat_model_id(
                         str(model_val)
                     ):
                         errors[model_key] = "model_not_supported"
@@ -426,8 +434,8 @@ def _model_select(
     default: str,
 ) -> SelectSelector:
     """Build a dropdown of live chat models; allow typing a custom id."""
-    opts = list(models)
-    cur = current or default
+    opts = [m for m in models if m not in RETIRED_MODELS]
+    cur = effective_model_choice(current, default)
     if cur and cur not in opts:
         opts = [cur, *opts]
     if default not in opts:
@@ -451,7 +459,9 @@ def openai_config_option_schema(
         RECOMMENDED_CHAT_MODEL,
         RECOMMENDED_FAST_MODEL,
         RECOMMENDED_FALLBACK_MODEL,
+        RECOMMENDED_VISION_MODEL,
     ]
+    models = [m for m in models if m not in RETIRED_MODELS]
 
     hass_apis: list[SelectOptionDict] = [
         SelectOptionDict(
@@ -481,10 +491,18 @@ def openai_config_option_schema(
         SelectOptionDict(value=MODE_CHAT_ONLY, label="Chat Only (no device control)"),
     ]
 
-    chat_default = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
-    fast_default = options.get(CONF_FAST_MODEL, RECOMMENDED_FAST_MODEL)
-    fallback_default = options.get(CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL)
-    vision_default = options.get(CONF_VISION_MODEL, RECOMMENDED_VISION_MODEL)
+    chat_default = effective_model_choice(
+        options.get(CONF_CHAT_MODEL), RECOMMENDED_CHAT_MODEL
+    )
+    fast_default = effective_model_choice(
+        options.get(CONF_FAST_MODEL), RECOMMENDED_FAST_MODEL
+    )
+    fallback_default = effective_model_choice(
+        options.get(CONF_FALLBACK_MODEL), RECOMMENDED_FALLBACK_MODEL
+    )
+    vision_default = effective_model_choice(
+        options.get(CONF_VISION_MODEL), RECOMMENDED_VISION_MODEL
+    )
 
     schema: VolDictType = {
         vol.Optional(
@@ -755,8 +773,11 @@ class GrokAITaskSubentryFlowHandler(ConfigSubentryFlow):
             http_client=get_async_client(self.hass),
         )
         models = await async_list_chat_models(client)
+        models = [m for m in models if m not in RETIRED_MODELS]
 
-        current = self.options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        current = effective_model_choice(
+            self.options.get(CONF_CHAT_MODEL), RECOMMENDED_CHAT_MODEL
+        )
         if (
             isinstance(current, str)
             and current
@@ -800,7 +821,9 @@ class GrokAITaskSubentryFlowHandler(ConfigSubentryFlow):
         if user_input is not None:
             if user_input[CONF_RECOMMENDED] == self.last_rendered_recommended:
                 model_val = user_input.get(CONF_CHAT_MODEL)
-                if model_val and (
+                if model_val and model_val in RETIRED_CHAT_MODELS:
+                    errors[CONF_CHAT_MODEL] = "model_retired"
+                elif model_val and (
                     model_val in UNSUPPORTED_MODELS
                     or not is_chat_model_id(str(model_val))
                 ):

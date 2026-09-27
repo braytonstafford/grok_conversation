@@ -24,6 +24,7 @@ from custom_components.grok_conversation.config_flow import RECOMMENDED_OPTIONS
 from custom_components.grok_conversation.const import (
     DOMAIN,
     RECOMMENDED_AI_TASK_OPTIONS,
+    RECOMMENDED_CHAT_MODEL,
 )
 
 
@@ -320,7 +321,9 @@ async def test_generate_data_image_attachment(
         )
 
     assert result.data == "Two cars"
-    messages = mock_openai_client.chat.completions.create.call_args.kwargs["messages"]
+    kwargs = mock_openai_client.chat.completions.create.call_args.kwargs
+    assert kwargs["model"] == RECOMMENDED_CHAT_MODEL
+    messages = kwargs["messages"]
     user_msg = next(m for m in messages if m.get("role") == "user")
     assert isinstance(user_msg["content"], list)
     assert any(part.get("type") == "image_url" for part in user_msg["content"])

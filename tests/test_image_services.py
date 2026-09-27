@@ -23,18 +23,23 @@ from custom_components.grok_conversation import (
 from custom_components.grok_conversation.config_flow import RECOMMENDED_OPTIONS
 from custom_components.grok_conversation.const import (
     CONF_CHAT_MODEL,
+    CONF_FALLBACK_MODEL,
+    CONF_FAST_MODEL,
     CONF_PROMPT,
     CONF_RECOMMENDED,
     CONF_VISION_MODEL,
     DOMAIN,
     RECOMMENDED_AI_TASK_OPTIONS,
     RECOMMENDED_CHAT_MODEL,
+    RECOMMENDED_FALLBACK_MODEL,
+    RECOMMENDED_FAST_MODEL,
     RECOMMENDED_VISION_MODEL,
     RETIRED_VISION_MODELS,
     SERVICE_GENERATE_CONTENT,
     SERVICE_GENERATE_IMAGE,
     SERVICE_PHOTO_ANALYSIS,
     SERVICE_QUERY_IMAGE,
+    _RETIRED_CHAT_WARNED,
 )
 
 
@@ -42,6 +47,7 @@ from custom_components.grok_conversation.const import (
 def _reset_deprecation_flags() -> None:
     """Reset one-shot warning flags between tests."""
     _DEPRECATED_FIELD_WARNED.clear()
+    _RETIRED_CHAT_WARNED.clear()
     import custom_components.grok_conversation as mod
 
     mod._RETIRED_VISION_WARNED = False
@@ -168,12 +174,22 @@ def test_format_images_missing_payload_raises() -> None:
 
 
 def test_resolve_vision_model_defaults() -> None:
-    """No model → entry option → recommended default."""
-    assert resolve_service_vision_model(None, {}) == RECOMMENDED_VISION_MODEL
+    """No override → prefer chat model when it supports images (#36)."""
+    assert resolve_service_vision_model(None, {}) == RECOMMENDED_CHAT_MODEL
     assert RECOMMENDED_VISION_MODEL == "grok-4.3"
     assert (
-        resolve_service_vision_model(None, {CONF_VISION_MODEL: "grok-4.6"})
+        resolve_service_vision_model(
+            None,
+            {CONF_CHAT_MODEL: "grok-4.6", CONF_VISION_MODEL: "grok-4.3"},
+        )
         == "grok-4.6"
+    )
+    assert (
+        resolve_service_vision_model(
+            None,
+            {CONF_CHAT_MODEL: "text-only-custom", CONF_VISION_MODEL: "grok-4.5"},
+        )
+        == "grok-4.5"
     )
     assert resolve_service_vision_model("grok-4.5", {}) == "grok-4.5"
 
@@ -305,7 +321,7 @@ async def test_photo_analysis_uses_vision_default(
     mock_config_entry: MockConfigEntry,
     mock_openai_client: MagicMock,
 ) -> None:
-    """photo_analysis uses recommended vision model when unset."""
+    """photo_analysis prefers the chat model when it supports images."""
     with patch(
         "custom_components.grok_conversation.async_chat_completion",
         new_callable=AsyncMock,
@@ -326,8 +342,8 @@ async def test_photo_analysis_uses_vision_default(
             return_response=True,
         )
 
-    assert mock_chat.await_args.kwargs["model"] == RECOMMENDED_VISION_MODEL
-    assert response["model"] == RECOMMENDED_VISION_MODEL
+    assert mock_chat.await_args.kwargs["model"] == RECOMMENDED_CHAT_MODEL
+    assert response["model"] == RECOMMENDED_CHAT_MODEL
 
 
 async def test_photo_analysis_uses_option_and_remaps_retired(
@@ -335,12 +351,16 @@ async def test_photo_analysis_uses_option_and_remaps_retired(
     mock_openai_client: MagicMock,
     caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """Option vision_model is used; retired per-call override remaps."""
+    """Vision option used when chat is text-only; retired per-call override remaps."""
     entry = MockConfigEntry(
         domain=DOMAIN,
         title="xAI Grok",
         data={CONF_API_KEY: "test-key"},
-        options={**dict(RECOMMENDED_OPTIONS), CONF_VISION_MODEL: "grok-4.6"},
+        options={
+            **dict(RECOMMENDED_OPTIONS),
+            CONF_CHAT_MODEL: "text-only-custom",
+            CONF_VISION_MODEL: "grok-4.6",
+        },
         version=1,
         minor_version=3,
         subentries_data=[
@@ -416,7 +436,7 @@ async def test_generate_content_with_image_uses_vision(
     mock_openai_client: MagicMock,
     tmp_path,
 ) -> None:
-    """generate_content with an image file uses the vision model."""
+    """generate_content with an image file prefers the chat model when capable."""
     img = tmp_path / "snap.jpg"
     img.write_bytes(b"\xff\xd8\xff\xd9")
 
@@ -447,15 +467,15 @@ async def test_generate_content_with_image_uses_vision(
             return_response=True,
         )
 
-    assert mock_chat.await_args.kwargs["model"] == RECOMMENDED_VISION_MODEL
-    assert resp["model"] == RECOMMENDED_VISION_MODEL
+    assert mock_chat.await_args.kwargs["model"] == RECOMMENDED_CHAT_MODEL
+    assert resp["model"] == RECOMMENDED_CHAT_MODEL
 
 
-async def test_migrate_entry_rewrites_retired_vision(
+async def test_migrate_entry_rewrites_retired_vision_and_fast(
     hass: HomeAssistant,
     mock_openai_client: MagicMock,
 ) -> None:
-    """Migration to minor 3 rewrites retired vision_model; leaves others alone."""
+    """Migration to minor 3 rewrites retired vision + fast/fallback on entry + subentry."""
     assert await async_setup_component(hass, "homeassistant", {})
     entry = MockConfigEntry(
         domain=DOMAIN,
@@ -464,10 +484,33 @@ async def test_migrate_entry_rewrites_retired_vision(
         options={
             CONF_CHAT_MODEL: RECOMMENDED_CHAT_MODEL,
             CONF_VISION_MODEL: "grok-2-vision-1212",
+            CONF_FAST_MODEL: "grok-4-1-fast-non-reasoning",
+            CONF_FALLBACK_MODEL: "grok-3-mini-fast",
             "live_search": "web",
         },
         version=1,
         minor_version=1,
+        subentries_data=[
+            {
+                "subentry_type": "ai_task_data",
+                "title": "Grok AI Task",
+                "data": {
+                    **dict(RECOMMENDED_AI_TASK_OPTIONS),
+                    CONF_CHAT_MODEL: "grok-4-1-fast-non-reasoning",
+                },
+                "unique_id": None,
+            },
+            {
+                "subentry_type": "conversation",
+                "title": "Grok Assist",
+                "data": {
+                    CONF_CHAT_MODEL: "grok-3",
+                    CONF_FAST_MODEL: "grok-4-fast-non-reasoning",
+                    CONF_FALLBACK_MODEL: "grok-3-mini",
+                },
+                "unique_id": None,
+            },
+        ],
     )
     entry.add_to_hass(hass)
 
@@ -490,10 +533,22 @@ async def test_migrate_entry_rewrites_retired_vision(
 
     assert entry.minor_version == 3
     assert entry.options[CONF_VISION_MODEL] == RECOMMENDED_VISION_MODEL
+    assert entry.options[CONF_FAST_MODEL] == RECOMMENDED_FAST_MODEL
+    assert entry.options[CONF_FALLBACK_MODEL] == RECOMMENDED_FALLBACK_MODEL
     assert entry.options["live_search"] == "web"
     assert entry.options[CONF_CHAT_MODEL] == RECOMMENDED_CHAT_MODEL
-    # AI Task subentry added by minor-2 migration
-    assert any(s.subentry_type == "ai_task_data" for s in entry.subentries.values())
+
+    ai_task = next(
+        s for s in entry.subentries.values() if s.subentry_type == "ai_task_data"
+    )
+    assert ai_task.data[CONF_CHAT_MODEL] == RECOMMENDED_CHAT_MODEL
+
+    conversation = next(
+        s for s in entry.subentries.values() if s.subentry_type == "conversation"
+    )
+    assert conversation.data[CONF_CHAT_MODEL] == RECOMMENDED_CHAT_MODEL
+    assert conversation.data[CONF_FAST_MODEL] == RECOMMENDED_FAST_MODEL
+    assert conversation.data[CONF_FALLBACK_MODEL] == RECOMMENDED_FALLBACK_MODEL
 
 
 async def test_migrate_entry_without_vision_model(
@@ -535,12 +590,12 @@ async def test_migrate_entry_without_vision_model(
     ) not in RETIRED_VISION_MODELS
 
 
-async def test_options_flow_saves_and_rejects_retired_vision(
+async def test_options_flow_rejects_retired_fast_and_vision(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,
     mock_openai_client: MagicMock,
 ) -> None:
-    """Options flow saves vision_model and rejects retired ids."""
+    """Options flow rejects retired fast/vision ids and saves current ones."""
     with (
         patch(
             "custom_components.grok_conversation.config_flow.async_list_chat_models",
@@ -560,7 +615,7 @@ async def test_options_flow_saves_and_rejects_retired_vision(
         )
         assert result["type"] == FlowResultType.FORM
 
-        # Reject retired
+        # Reject retired vision
         result = await hass.config_entries.options.async_configure(
             result["flow_id"],
             {
@@ -572,6 +627,21 @@ async def test_options_flow_saves_and_rejects_retired_vision(
         assert result["type"] == FlowResultType.FORM
         assert result["errors"][CONF_VISION_MODEL] == "model_retired"
 
+        # Reject retired fast
+        result = await hass.config_entries.options.async_init(
+            mock_config_entry.entry_id
+        )
+        result = await hass.config_entries.options.async_configure(
+            result["flow_id"],
+            {
+                CONF_RECOMMENDED: True,
+                CONF_CHAT_MODEL: RECOMMENDED_CHAT_MODEL,
+                CONF_FAST_MODEL: "grok-4-1-fast-non-reasoning",
+            },
+        )
+        assert result["type"] == FlowResultType.FORM
+        assert result["errors"][CONF_FAST_MODEL] == "model_retired"
+
         # Save valid
         result = await hass.config_entries.options.async_init(
             mock_config_entry.entry_id
@@ -582,7 +652,11 @@ async def test_options_flow_saves_and_rejects_retired_vision(
                 CONF_RECOMMENDED: True,
                 CONF_CHAT_MODEL: RECOMMENDED_CHAT_MODEL,
                 CONF_VISION_MODEL: "grok-4.6",
+                CONF_FAST_MODEL: RECOMMENDED_FAST_MODEL,
+                CONF_FALLBACK_MODEL: RECOMMENDED_FALLBACK_MODEL,
             },
         )
         assert result["type"] == FlowResultType.CREATE_ENTRY
         assert result["data"][CONF_VISION_MODEL] == "grok-4.6"
+        assert result["data"][CONF_FAST_MODEL] == RECOMMENDED_FAST_MODEL
+        assert result["data"][CONF_FALLBACK_MODEL] == RECOMMENDED_FALLBACK_MODEL

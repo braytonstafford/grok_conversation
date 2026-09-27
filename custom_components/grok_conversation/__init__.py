@@ -39,6 +39,8 @@ from .api_helpers import (
 )
 from .const import (
     CONF_CHAT_MODEL,
+    CONF_FALLBACK_MODEL,
+    CONF_FAST_MODEL,
     CONF_FILENAMES,
     CONF_IMAGE_MODEL,
     CONF_LIVE_SEARCH,
@@ -63,11 +65,14 @@ from .const import (
     LOGGER,
     RECOMMENDED_AI_TASK_OPTIONS,
     RECOMMENDED_CHAT_MODEL,
+    RECOMMENDED_FALLBACK_MODEL,
+    RECOMMENDED_FAST_MODEL,
     RECOMMENDED_IMAGE_GENERATION_MODEL,
     RECOMMENDED_MAX_TOKENS,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     RECOMMENDED_VISION_MODEL,
+    RETIRED_CHAT_MODELS,
     RETIRED_VISION_MODELS,
     SERVICE_ASK,
     SERVICE_CLEAR_MEMORY,
@@ -78,7 +83,9 @@ from .const import (
     SERVICE_QUERY_IMAGE,
     SERVICE_RESET_STATS,
     SIZE_TO_ASPECT_RATIO,
+    remap_retired_chat_model,
 )
+from .entity import resolve_vision_model
 from .usage import UsageTracker
 from .voice_api import async_validate_voice_access
 
@@ -213,25 +220,32 @@ def resolve_service_vision_model(
     call_model: str | None,
     entry_options: MappingProxyType[str, Any] | dict[str, Any],
 ) -> str:
-    """Resolve vision model for image services with retired-id guard."""
+    """Resolve vision model for image services with retired-id guard.
+
+    Prefer the entry chat model when it supports images (shared #36
+    resolution). Fall back to ``vision_model`` / recommended. Per-call
+    overrides that use retired ``grok-2-vision-*`` ids are remapped.
+    """
     global _RETIRED_VISION_WARNED
 
-    model = (
-        call_model
-        or entry_options.get(CONF_VISION_MODEL)
-        or RECOMMENDED_VISION_MODEL
+    if call_model:
+        if call_model in RETIRED_VISION_MODELS:
+            if not _RETIRED_VISION_WARNED:
+                _RETIRED_VISION_WARNED = True
+                LOGGER.warning(
+                    "Vision model '%s' is retired; using '%s' instead. "
+                    "Update your automation or integration options.",
+                    call_model,
+                    RECOMMENDED_VISION_MODEL,
+                )
+            return RECOMMENDED_VISION_MODEL
+        return remap_retired_chat_model(call_model, RECOMMENDED_VISION_MODEL)
+
+    chat = remap_retired_chat_model(
+        entry_options.get(CONF_CHAT_MODEL),
+        RECOMMENDED_CHAT_MODEL,
     )
-    if model in RETIRED_VISION_MODELS:
-        if not _RETIRED_VISION_WARNED:
-            _RETIRED_VISION_WARNED = True
-            LOGGER.warning(
-                "Vision model '%s' is retired; using '%s' instead. "
-                "Update your automation or integration options.",
-                model,
-                RECOMMENDED_VISION_MODEL,
-            )
-        return RECOMMENDED_VISION_MODEL
-    return model
+    return resolve_vision_model(dict(entry_options), chat)
 
 
 def encode_file(file_path: str) -> tuple[str, str]:
@@ -990,8 +1004,28 @@ def _add_ai_task_subentry(hass: HomeAssistant, entry: ConfigEntry) -> None:
     )
 
 
+def _migrate_retired_model_keys(data: dict[str, Any]) -> list[tuple[str, str, str]]:
+    """Rewrite retired model ids in an options/subentry dict.
+
+    Returns list of (key, old, new) replacements applied.
+    """
+    replacements: list[tuple[str, str, str]] = []
+    key_map = (
+        (CONF_VISION_MODEL, RECOMMENDED_VISION_MODEL, RETIRED_VISION_MODELS),
+        (CONF_FAST_MODEL, RECOMMENDED_FAST_MODEL, RETIRED_CHAT_MODELS),
+        (CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL, RETIRED_CHAT_MODELS),
+        (CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL, RETIRED_CHAT_MODELS),
+    )
+    for key, recommended, retired in key_map:
+        current = data.get(key)
+        if current in retired:
+            data[key] = recommended
+            replacements.append((key, str(current), recommended))
+    return replacements
+
+
 async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
-    """Migrate config entry (AI Task subentry + retired vision model)."""
+    """Migrate config entry (AI Task subentry + retired vision/fast models)."""
     LOGGER.debug(
         "Migrating %s from version %s.%s",
         entry.entry_id,
@@ -1009,16 +1043,35 @@ async def async_migrate_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if entry.version == 1 and entry.minor_version < 3:
         options = dict(entry.options)
         update_kwargs: dict[str, Any] = {"minor_version": 3}
-        vision = options.get(CONF_VISION_MODEL)
-        if vision in RETIRED_VISION_MODELS:
-            options[CONF_VISION_MODEL] = RECOMMENDED_VISION_MODEL
+        for key, old, new in _migrate_retired_model_keys(options):
             update_kwargs["options"] = options
             LOGGER.info(
-                "Migrated retired vision_model '%s' → '%s' for entry %s",
-                vision,
-                RECOMMENDED_VISION_MODEL,
+                "Migrated retired %s '%s' → '%s' for entry %s",
+                key,
+                old,
+                new,
                 entry.entry_id,
             )
+
+        # Rewrite retired ids on conversation + ai_task_data subentries.
+        for subentry in entry.subentries.values():
+            if subentry.subentry_type not in ("conversation", "ai_task_data"):
+                continue
+            data = dict(subentry.data)
+            changes = _migrate_retired_model_keys(data)
+            if not changes:
+                continue
+            hass.config_entries.async_update_subentry(entry, subentry, data=data)
+            for key, old, new in changes:
+                LOGGER.info(
+                    "Migrated retired %s '%s' → '%s' for subentry %s (%s)",
+                    key,
+                    old,
+                    new,
+                    subentry.subentry_id,
+                    subentry.subentry_type,
+                )
+
         hass.config_entries.async_update_entry(entry, **update_kwargs)
 
     LOGGER.debug(

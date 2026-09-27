@@ -44,6 +44,8 @@ from .const import (
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     RECOMMENDED_VISION_MODEL,
+    RETIRED_VISION_MODELS,
+    remap_retired_chat_model,
 )
 from .exceptions import TokenLengthExceededError
 from .usage import UsageTracker
@@ -472,11 +474,14 @@ def resolve_vision_model(options: dict[str, Any], chat_model: str) -> str:
     back to ``vision_model`` / ``RECOMMENDED_VISION_MODEL`` when the chat
     model cannot take images. Retired ``grok-2-vision-*`` values are skipped.
     """
-    if model_supports_vision(chat_model):
-        return chat_model
+    chat = remap_retired_chat_model(chat_model, RECOMMENDED_CHAT_MODEL)
+    if model_supports_vision(chat):
+        return chat
     configured = options.get(CONF_VISION_MODEL)
-    if configured and model_supports_vision(str(configured)):
-        return str(configured)
+    if configured and configured not in RETIRED_VISION_MODELS:
+        configured = remap_retired_chat_model(str(configured), RECOMMENDED_VISION_MODEL)
+        if model_supports_vision(str(configured)):
+            return str(configured)
     return RECOMMENDED_VISION_MODEL
 
 
@@ -685,7 +690,10 @@ class GrokBaseLLMEntity(Entity):
     ) -> None:
         """Run chat completions + tool loop. Does not depend on ConversationInput."""
         opts = options if options is not None else self._llm_options()
-        active_model = model or opts.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        active_model = remap_retired_chat_model(
+            model or opts.get(CONF_CHAT_MODEL),
+            RECOMMENDED_CHAT_MODEL,
+        )
         agent = agent_id or self.entity_id
         client = self.entry.runtime_data
 
@@ -713,10 +721,15 @@ class GrokBaseLLMEntity(Entity):
             }
 
         models_to_try = [active_model]
-        fb = (
+        raw_fb = (
             fallback_model
             if fallback_model is not None
             else opts.get(CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL)
+        )
+        fb = (
+            remap_retired_chat_model(str(raw_fb), RECOMMENDED_FALLBACK_MODEL)
+            if raw_fb
+            else ""
         )
         # AI Task subentries may omit fallback; conversation keeps entry fallback
         if fb and fb != active_model and service == "conversation":

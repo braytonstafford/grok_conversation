@@ -126,12 +126,12 @@ async def test_conversation_tool_loop_executes_tool(
         model="grok-4.3-latest",
         options={
             CONF_CHAT_MODEL: "grok-4.3-latest",
-            CONF_FALLBACK_MODEL: "grok-3-mini-fast",
+            CONF_FALLBACK_MODEL: "grok-4.6",
         },
         messages=messages,
         agent_id=entity.entity_id,
         service="conversation",
-        fallback_model="grok-3-mini-fast",
+        fallback_model="grok-4.6",
     )
 
     assert tool.calls == [{"action": "turn_on"}]
@@ -173,19 +173,19 @@ async def test_conversation_fallback_model_on_primary_error(
         model="grok-4.3-latest",
         options={
             CONF_CHAT_MODEL: "grok-4.3-latest",
-            CONF_FALLBACK_MODEL: "grok-3-mini-fast",
+            CONF_FALLBACK_MODEL: "grok-4.6",
         },
         messages=messages,
         agent_id=entity.entity_id,
         service="conversation",
-        fallback_model="grok-3-mini-fast",
+        fallback_model="grok-4.6",
     )
 
     assert mock_openai_client.chat.completions.create.await_count == 2
     first_kwargs = mock_openai_client.chat.completions.create.await_args_list[0].kwargs
     second_kwargs = mock_openai_client.chat.completions.create.await_args_list[1].kwargs
     assert first_kwargs["model"] == "grok-4.3-latest"
-    assert second_kwargs["model"] == "grok-3-mini-fast"
+    assert second_kwargs["model"] == "grok-4.6"
     assert any(
         isinstance(c, conversation.AssistantContent)
         and c.content == "Fallback answered."
@@ -231,19 +231,19 @@ async def test_conversation_fallback_does_not_inherit_partial_tools(
         model="grok-4.3-latest",
         options={
             CONF_CHAT_MODEL: "grok-4.3-latest",
-            CONF_FALLBACK_MODEL: "grok-3-mini-fast",
+            CONF_FALLBACK_MODEL: "grok-4.6",
         },
         messages=messages,
         agent_id=entity.entity_id,
         service="conversation",
-        fallback_model="grok-3-mini-fast",
+        fallback_model="grok-4.6",
     )
 
     # Tool ran once on the primary attempt
     assert tool.calls == [{"action": "turn_on"}]
     # Third call is the fallback's first request — must be clean (no tool roles)
     fallback_kwargs = mock_openai_client.chat.completions.create.await_args_list[2].kwargs
-    assert fallback_kwargs["model"] == "grok-3-mini-fast"
+    assert fallback_kwargs["model"] == "grok-4.6"
     roles = [m.get("role") for m in fallback_kwargs["messages"]]
     assert "tool" not in roles
     assert roles.count("assistant") == 0 or all(

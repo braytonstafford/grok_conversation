@@ -138,7 +138,7 @@ Response includes `images` (list of `{url}` or `{b64_json}` plus `mime_type` whe
 
 ### Vision services
 
-`photo_analysis` and `query_image` default to the **Vision model** option (`grok-4.3`). Per-call `model` overrides are remapped if they use a retired id (`grok-2-vision-*`).
+`photo_analysis`, `query_image`, and `generate_content` (with image files) prefer the entry **chat model** when it supports images (same shared resolution as AI Task attachments). Otherwise they use the **Vision model** option (default `grok-4.3`). Per-call `model` overrides remap retired ids (`grok-2-vision-*`).
 
 ---
 
@@ -182,6 +182,8 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 ---
 
 ## Version
+
+**1.10.0** — Replace retired fast/fallback defaults (`grok-4-1-fast-non-reasoning`, `grok-3-mini-fast`) with `grok-4.3` after the [May 15 2026 retirement](https://docs.x.ai/developers/migration/may-15-retirement) (no cheaper/faster documented non-reasoning tool-calling model remains). Options picker rejects retired ids; runtime remap + warning. Minor-3 migration also rewrites stored fast/fallback/chat/vision ids on entry options and conversation/ai_task_data subentries. Image services use shared vision resolution (prefer chat model when it supports images).
 
 **1.9.0** — AI Task platform (`generate_data` + structured output + image attachments). Shared LLM entity base. Config subentry + migration. `generate_image` uses documented xAI params (`aspect_ratio` / `resolution` / `quality` / `n` / `response_format`); deprecated `size` / `style` / `quality: standard|hd` still accepted with warnings. Vision default `grok-4.3` with options picker + migration from retired `grok-2-vision-*` (minor 3).
 
