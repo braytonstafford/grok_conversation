@@ -15,6 +15,7 @@ from .const import (
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_FALLBACK_MODEL,
     RECOMMENDED_FAST_MODEL,
+    RETIRED_MODELS,
 )
 
 # Substrings that mark non-chat models returned by GET /v1/models
@@ -34,21 +35,18 @@ _NON_CHAT_MODEL_MARKERS: tuple[str, ...] = (
     "speech",
 )
 
-# Known-good fallbacks if the models API is unreachable
+# Known-good fallbacks if the models API is unreachable (current models only).
 _FALLBACK_CHAT_MODELS: tuple[str, ...] = (
     RECOMMENDED_CHAT_MODEL,
-    "grok-4.5",
-    "grok-4.5-latest",
-    "grok-4-latest",
-    "grok-4",
-    "grok-4-1-fast-non-reasoning",
-    "grok-4-1-fast-reasoning",
-    "grok-3-mini-fast",
-    "grok-3-mini",
-    "grok-3",
-    "grok-2-latest",
     RECOMMENDED_FAST_MODEL,
     RECOMMENDED_FALLBACK_MODEL,
+    "grok-4.7",
+    "grok-4.6",
+    "grok-4.5",
+    "grok-4.5-latest",
+    "grok-4.3",
+    "grok-4-latest",
+    "grok-4",
 )
 
 
@@ -77,7 +75,12 @@ def filter_chat_model_ids(model_ids: list[str]) -> list[str]:
         if not isinstance(mid, str):
             continue
         name = mid.strip()
-        if not name or name in seen or not is_chat_model_id(name):
+        if (
+            not name
+            or name in seen
+            or name in RETIRED_MODELS
+            or not is_chat_model_id(name)
+        ):
             continue
         seen.add(name)
         out.append(name)

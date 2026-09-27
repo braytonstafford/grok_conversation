@@ -59,7 +59,7 @@ async def mock_config_entry(
         data={CONF_API_KEY: "test-key"},
         options=dict(RECOMMENDED_OPTIONS),
         version=1,
-        minor_version=2,
+        minor_version=3,
         subentries_data=[
             {
                 "subentry_type": "ai_task_data",

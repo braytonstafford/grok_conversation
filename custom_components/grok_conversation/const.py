@@ -49,14 +49,87 @@ SERVICE_GENERATE_CONTENT = "generate_content"
 # Defaults / recommended
 # ---------------------------------------------------------------------------
 RECOMMENDED_CHAT_MODEL = "grok-4.3-latest"
-RECOMMENDED_FAST_MODEL = "grok-4-1-fast-non-reasoning"
-RECOMMENDED_FALLBACK_MODEL = "grok-3-mini-fast"
-# grok-2-vision-1212 is retired; current Grok 4.x chat models accept image input
-# (see https://docs.x.ai/docs/models — Image input models).
-RECOMMENDED_VISION_MODEL = "grok-4.3-latest"
+# After the May 15 2026 retirement, xAI no longer lists a separate fast
+# non-reasoning chat model cheaper/faster than grok-4.3
+# (https://docs.x.ai/developers/models, https://docs.x.ai/developers/migration/may-15-retirement).
+RECOMMENDED_FAST_MODEL = "grok-4.3"
+RECOMMENDED_FALLBACK_MODEL = "grok-4.3"
+# Cheapest documented image-capable chat model (text+image → text).
+# See https://docs.x.ai/developers/models/grok-4.3
+RECOMMENDED_VISION_MODEL = "grok-4.3"
 RECOMMENDED_IMAGE_GENERATION_MODEL = "grok-imagine-image"
 # Keep legacy alias used elsewhere
 RECOMMENDED_IMAGE_MODEL = RECOMMENDED_IMAGE_GENERATION_MODEL
+
+# Retired dedicated vision model ids (no longer listed by xAI).
+RETIRED_VISION_MODELS = frozenset(
+    {
+        "grok-2-vision-1212",
+        "grok-2-vision",
+        "grok-2-vision-latest",
+        "grok-vision-beta",
+    }
+)
+
+# Retired chat / fast / fallback model ids (May 15 2026 + unlisted predecessors).
+# https://docs.x.ai/developers/migration/may-15-retirement
+RETIRED_CHAT_MODELS = frozenset(
+    {
+        "grok-4-1-fast-reasoning",
+        "grok-4-1-fast-non-reasoning",
+        "grok-4-fast-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-4-0709",
+        "grok-code-fast-1",
+        "grok-3",
+        "grok-3-mini",
+        "grok-3-mini-fast",
+        "grok-3-fast",
+        "grok-2-latest",
+        "grok-2",
+        "grok-2-1212",
+    }
+)
+
+# Models that should never appear as defaults / picker suggestions.
+RETIRED_MODELS = RETIRED_VISION_MODELS | RETIRED_CHAT_MODELS
+
+_RETIRED_CHAT_WARNED: set[str] = set()
+
+
+def remap_retired_chat_model(model: str | None, replacement: str) -> str:
+    """Return ``model``, or ``replacement`` when the id is retired.
+
+    Logs one WARNING per retired id per process so stored options and
+    automations keep working after the May 15 2026 retirement.
+    """
+    if not model:
+        return replacement
+    if model not in RETIRED_CHAT_MODELS:
+        return model
+    if model not in _RETIRED_CHAT_WARNED:
+        _RETIRED_CHAT_WARNED.add(model)
+        LOGGER.warning(
+            "Chat model '%s' is retired; using '%s' instead. "
+            "Update your integration options "
+            "(https://docs.x.ai/developers/migration/may-15-retirement).",
+            model,
+            replacement,
+        )
+    return replacement
+
+
+def effective_model_choice(
+    current: str | None,
+    recommended: str,
+    *,
+    retired: frozenset[str] | None = None,
+) -> str:
+    """Pick a non-retired model for options defaults / pickers."""
+    retired_ids = retired if retired is not None else RETIRED_MODELS
+    if current and current not in retired_ids:
+        return current
+    return recommended
 
 # AI Task subentry defaults (generate_image deferred; image_model kept for schema stability)
 DEFAULT_AI_TASK_NAME = "Grok AI Task"
@@ -85,10 +158,39 @@ RECOMMENDED_BUDGET_WARN_USD = 0.0  # 0 = disabled
 
 UNSUPPORTED_MODELS: list[str] = []
 
-# Image generation constants
+# Image generation constants (xAI Images API)
+# Deprecated size values kept for backward-compatible service validation.
 IMAGE_SIZES = ("1024x1024", "1024x1792", "1792x1024")
-IMAGE_QUALITIES = ("standard", "hd")
-IMAGE_STYLES = ("vivid", "natural")
+SIZE_TO_ASPECT_RATIO = {
+    "1024x1024": "1:1",
+    "1024x1792": "9:16",
+    "1792x1024": "16:9",
+}
+# Documented aspect ratios for POST /v1/images/generations
+IMAGE_ASPECT_RATIOS = (
+    "1:1",
+    "3:4",
+    "4:3",
+    "9:16",
+    "16:9",
+    "2:3",
+    "3:2",
+    "9:19.5",
+    "19.5:9",
+    "9:20",
+    "20:9",
+    "1:2",
+    "2:1",
+    "21:9",
+    "5:2",
+    "auto",
+)
+IMAGE_RESOLUTIONS = ("1k", "2k")
+# Documented (2.0-only) + legacy DALL·E values still accepted for validation
+IMAGE_QUALITIES = ("low", "medium", "auto", "standard", "hd")
+IMAGE_QUALITY_DOCUMENTED = frozenset({"low", "medium", "auto"})
+IMAGE_STYLES = ("vivid", "natural")  # deprecated; accepted and ignored
+IMAGE_RESPONSE_FORMATS = ("url", "b64_json")
 
 # Live search modes (xAI Responses API server tools)
 LIVE_SEARCH_OFF = "off"

@@ -15,6 +15,7 @@ from .const import (
     CONF_CHAT_MODEL,
     LOGGER,
     RECOMMENDED_CHAT_MODEL,
+    remap_retired_chat_model,
 )
 from .entity import GrokBaseLLMEntity, model_supports_vision
 
@@ -53,7 +54,10 @@ class GrokAITaskEntity(ai_task.AITaskEntity, GrokBaseLLMEntity):
         features = (
             ai_task.AITaskEntityFeature.GENERATE_DATA
         )
-        chat_model = subentry.data.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
+        chat_model = remap_retired_chat_model(
+            subentry.data.get(CONF_CHAT_MODEL),
+            RECOMMENDED_CHAT_MODEL,
+        )
         if model_supports_vision(str(chat_model)):
             features |= ai_task.AITaskEntityFeature.SUPPORT_ATTACHMENTS
         # GENERATE_IMAGE is deferred to a follow-up PR. The subentry may still

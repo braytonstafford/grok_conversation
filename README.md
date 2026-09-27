@@ -95,6 +95,7 @@ Setup probes your key against the Voice endpoints. If chat works but TTS/STT fai
 | **Chat model** | Primary model — live list from xAI API |
 | **Fast model** | Used by auto-routing for short commands |
 | **Fallback model** | Tried if the primary errors |
+| **Vision model** | Used by `photo_analysis` / `query_image` / image attachments (default `grok-4.3`) |
 | Default TTS voice | Eve, Ara, Rex, Luna, … |
 | Default TTS language | `en`, `es-ES`, `pt-BR`, … |
 | TTS speed | 0.7–1.5 |
@@ -102,6 +103,42 @@ Setup probes your key against the Voice endpoints. If chat works but TTS/STT fai
 | Live Search | off / web / x / full |
 | Interaction mode | tools / pipeline / chat_only |
 | AI Task subentry | Name, chat model, optional image model (generate_image deferred) |
+
+---
+
+## Services
+
+### `grok_conversation.generate_image`
+
+Generate images with Grok Imagine. Only documented xAI parameters are sent.
+
+| Field | Notes |
+| --- | --- |
+| `prompt` | Required |
+| `model` | Default `grok-imagine-image`. xAI recommends `grok-imagine-image-2.0` |
+| `aspect_ratio` | Optional (`1:1`, `16:9`, `9:16`, …). Omit for xAI `auto` |
+| `resolution` | Optional `1k` / `2k` |
+| `quality` | Optional `low` / `medium` / `auto` (2.0 only) |
+| `n` | 1–10 (default 1) |
+| `response_format` | `url` (default) or `b64_json` |
+
+Deprecated (still accepted): `size` (mapped to aspect ratio), `style` (ignored), `quality: standard|hd` (ignored).
+
+```yaml
+action: grok_conversation.generate_image
+data:
+  config_entry: YOUR_ENTRY_ID
+  prompt: A cozy living room at dusk
+  aspect_ratio: "16:9"
+  response_format: b64_json
+  model: grok-imagine-image-2.0
+```
+
+Response includes `images` (list of `{url}` or `{b64_json}` plus `mime_type` when present). When `response_format=url`, `url` is also set to the first image URL.
+
+### Vision services
+
+`photo_analysis`, `query_image`, `generate_content` (with image files), and AI Task attachments share one resolution rule: an **image-capable chat model always wins**; the **Vision model** option is only the fallback when the chat model cannot take images (default `grok-4.3`). Per-call `model` overrides remap retired ids (`grok-2-vision-*`).
 
 ---
 
@@ -146,7 +183,9 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 
 ## Version
 
-**1.9.0** — AI Task platform (`generate_data` + structured output + image attachments). Shared LLM entity base. Config subentry + migration. `generate_image` deferred to a follow-up.
+**1.10.0** — `generate_image` uses documented xAI params (`aspect_ratio` / `resolution` / `quality` / `n` / `response_format`); deprecated `size` / `style` / `quality: standard|hd` still accepted with warnings; `quality` is sent only for `grok-imagine-image-2.0`. Vision default `grok-4.3` with options picker + shared resolution (image-capable chat model wins; vision option is fallback). Replace retired fast/fallback defaults (`grok-4-1-fast-non-reasoning`, `grok-3-mini-fast`) with `grok-4.3` after the [May 15 2026 retirement](https://docs.x.ai/developers/migration/may-15-retirement) (no cheaper/faster documented non-reasoning tool-calling model remains). Options picker rejects retired ids; runtime remap + warning. Minor-3 migration rewrites stored vision/fast/fallback/chat ids on entry options and conversation/ai_task_data subentries.
+
+**1.9.0** — AI Task platform (`generate_data` + structured output + image attachments). Shared LLM entity base. Config subentry + migration (minor 2).
 
 **1.8.0** — Pipeline live-search deny-list (#30); satellite TTS prewarm before continue (#31); persona on search pass + no spoken citations (#32). Thanks @CodyJon.
 

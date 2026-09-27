@@ -57,6 +57,7 @@ from .const import (
     RECOMMENDED_TOP_P,
     RECOMMENDED_VOICE_OPTIMIZED,
     VOICE_OPTIMIZED_SUFFIX,
+    remap_retired_chat_model,
 )
 from .entity import (
     GrokBaseLLMEntity,
@@ -286,8 +287,12 @@ class OpenAIConversationEntity(
 
     def _select_model(self, user_text: str, options: dict) -> str:
         """Pick chat/fast model based on auto-routing."""
-        primary = options.get(CONF_CHAT_MODEL, RECOMMENDED_CHAT_MODEL)
-        fast = options.get(CONF_FAST_MODEL, RECOMMENDED_FAST_MODEL)
+        primary = remap_retired_chat_model(
+            options.get(CONF_CHAT_MODEL), RECOMMENDED_CHAT_MODEL
+        )
+        fast = remap_retired_chat_model(
+            options.get(CONF_FAST_MODEL), RECOMMENDED_FAST_MODEL
+        )
         if options.get(CONF_AUTO_MODEL_ROUTING, RECOMMENDED_AUTO_MODEL_ROUTING):
             if looks_like_simple_query(user_text) and not looks_like_search_query(
                 user_text
@@ -462,7 +467,9 @@ class OpenAIConversationEntity(
             return err.as_conversation_result()
 
         model = self._select_model(user_input.text, options)
-        fallback_model = options.get(CONF_FALLBACK_MODEL, RECOMMENDED_FALLBACK_MODEL)
+        fallback_model = remap_retired_chat_model(
+            options.get(CONF_FALLBACK_MODEL), RECOMMENDED_FALLBACK_MODEL
+        )
         messages = [
             m
             for content in chat_log.content
