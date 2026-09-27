@@ -36,6 +36,7 @@ from .const import (
     CONF_VISION_MODEL,
     DOMAIN,
     LOGGER,
+    RECOMMENDED_AI_TASK_MAX_TOKENS,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_FALLBACK_MODEL,
     RECOMMENDED_MAX_TOKENS,
@@ -216,6 +217,39 @@ def format_tool(
     }
 
 
+def _adjust_strict_schema(schema: dict[str, Any]) -> None:
+    """Make a JSON schema valid for strict structured outputs.
+
+    xAI / OpenAI strict mode requires every property to appear in ``required``.
+    Optional fields are made nullable (``[type, "null"]``) and then required,
+    matching core ``openai_conversation`` behavior.
+    """
+    node_type = schema.get("type")
+    if node_type == "object" or "properties" in schema:
+        schema.setdefault("additionalProperties", False)
+        props = schema.get("properties")
+        if not isinstance(props, dict):
+            return
+        required = list(schema.get("required") or [])
+        for prop, prop_info in props.items():
+            if isinstance(prop_info, dict):
+                _adjust_strict_schema(prop_info)
+            if prop not in required:
+                if isinstance(prop_info, dict):
+                    ptype = prop_info.get("type")
+                    if isinstance(ptype, list):
+                        if "null" not in ptype:
+                            prop_info["type"] = [*ptype, "null"]
+                    elif ptype is not None:
+                        prop_info["type"] = [ptype, "null"]
+                    else:
+                        prop_info["type"] = ["string", "null"]
+                required.append(prop)
+        schema["required"] = required
+    elif node_type == "array" and isinstance(schema.get("items"), dict):
+        _adjust_strict_schema(schema["items"])
+
+
 def format_structured_output(
     structure: Any, llm_api: llm.APIInstance | None
 ) -> dict[str, Any]:
@@ -260,6 +294,7 @@ def format_structured_output(
             _force_no_additional(node["items"])
 
     _force_no_additional(schema)
+    _adjust_strict_schema(schema)
     return schema
 
 
@@ -400,9 +435,9 @@ def convert_content_to_param(
 def model_supports_vision(model: str) -> bool:
     """Return True if the model accepts image input.
 
-    Current Grok 4.x chat models accept images. Dedicated vision ids and
-    legacy grok-2-vision-* remain supported. Image-generation / voice models
-    do not.
+    Current Grok 4.x chat models accept images. Retired ``grok-2-vision-*``
+    ids are not usable. Image-generation / voice / embedding models do not
+    accept chat image input.
     """
     mid = (model or "").strip().lower()
     if not mid:
@@ -412,6 +447,9 @@ def model_supports_vision(model: str) -> bool:
         for marker in ("imagine", "tts", "stt", "voice", "embedding", "embed")
     ):
         return False
+    # Retired dedicated vision models (xAI removed grok-2-vision-*)
+    if mid.startswith("grok-2-vision") or mid.startswith("grok-2-image"):
+        return False
     if "vision" in mid:
         return True
     # Grok 4+ chat models accept image input per xAI docs (2026)
@@ -420,8 +458,6 @@ def model_supports_vision(model: str) -> bool:
     if mid in {"grok-3", "grok-3-mini", "grok-3-mini-fast", "grok-3-fast"}:
         # Grok 3 family: text-only unless vision variant
         return False
-    if mid.startswith("grok-2-vision"):
-        return True
     # Default chat model aliases (latest) track current multimodal Grok
     if mid in {"grok-4.3-latest", "grok-4-latest", "grok-4.5-latest", "grok-4.6-latest"}:
         return True
@@ -429,12 +465,18 @@ def model_supports_vision(model: str) -> bool:
 
 
 def resolve_vision_model(options: dict[str, Any], chat_model: str) -> str:
-    """Pick a vision-capable model for attachment requests."""
-    configured = options.get(CONF_VISION_MODEL) or RECOMMENDED_VISION_MODEL
-    if model_supports_vision(str(configured)):
-        return str(configured)
+    """Pick a vision-capable model for attachment requests.
+
+    Prefer the configured chat model when it accepts images so AI Task
+    subentries (and Assist) keep the user's chosen model/cost. Only fall
+    back to ``vision_model`` / ``RECOMMENDED_VISION_MODEL`` when the chat
+    model cannot take images. Retired ``grok-2-vision-*`` values are skipped.
+    """
     if model_supports_vision(chat_model):
         return chat_model
+    configured = options.get(CONF_VISION_MODEL)
+    if configured and model_supports_vision(str(configured)):
+        return str(configured)
     return RECOMMENDED_VISION_MODEL
 
 
@@ -442,6 +484,7 @@ class GrokBaseLLMEntity(Entity):
     """Shared Grok LLM helpers for conversation and AI Task entities."""
 
     _attr_has_entity_name = True
+    _attr_name: str | None = None
 
     def __init__(
         self,
@@ -452,7 +495,10 @@ class GrokBaseLLMEntity(Entity):
         self.entry = entry
         self.subentry = subentry
         if subentry is not None:
-            self._attr_name = subentry.title
+            # Use the device name only (has_entity_name). Setting both the
+            # entity name and device name to the subentry title produced
+            # ai_task.grok_ai_task_grok_ai_task / "Grok AI Task Grok AI Task".
+            self._attr_name = None
             self._attr_unique_id = subentry.subentry_id
             self._attr_device_info = dr.DeviceInfo(
                 identifiers={(DOMAIN, subentry.subentry_id)},
@@ -589,13 +635,30 @@ class GrokBaseLLMEntity(Entity):
 
     def _openai_tool_calls_to_ha(
         self, tool_calls: Any
-    ) -> list[llm.ToolInput]:
-        """Convert OpenAI SDK tool calls to Home Assistant ToolInput list."""
+    ) -> tuple[list[llm.ToolInput], dict[str, dict[str, Any]]]:
+        """Convert OpenAI SDK tool calls to HA ToolInputs.
+
+        Returns ``(tool_inputs, parse_errors)`` where ``parse_errors`` maps
+        tool_call id → error payload for malformed argument JSON. Those
+        calls must not execute the tool; feed the error back to the model.
+        """
         ha_calls: list[llm.ToolInput] = []
+        parse_errors: dict[str, dict[str, Any]] = {}
         for tc in tool_calls:
+            raw_args = tc.function.arguments or "{}"
             try:
-                args = json.loads(tc.function.arguments or "{}")
-            except json.JSONDecodeError:
+                args = json.loads(raw_args)
+            except json.JSONDecodeError as err:
+                parse_errors[tc.id] = {
+                    "error": f"Invalid tool arguments JSON: {err}",
+                    "raw_arguments": raw_args,
+                }
+                args = {}
+            if not isinstance(args, dict):
+                parse_errors[tc.id] = {
+                    "error": "Invalid tool arguments JSON: expected object",
+                    "raw_arguments": raw_args,
+                }
                 args = {}
             ha_calls.append(
                 llm.ToolInput(
@@ -604,7 +667,7 @@ class GrokBaseLLMEntity(Entity):
                     id=tc.id,
                 )
             )
-        return ha_calls
+        return ha_calls, parse_errors
 
     async def _async_handle_chat_log(
         self,
@@ -661,10 +724,16 @@ class GrokBaseLLMEntity(Entity):
 
         last_error: Exception | None = None
         for try_model in models_to_try:
+            # Fresh message copy + chat_log checkpoint so a failed primary
+            # attempt does not leak partial tool turns into the fallback.
+            attempt_messages = (
+                [dict(m) for m in messages] if messages is not None else None
+            )
+            content_checkpoint = len(chat_log.content)
             try:
                 await self._async_tool_loop(
                     chat_log=chat_log,
-                    messages=messages,
+                    messages=attempt_messages,
                     model=try_model,
                     options=opts,
                     client=client,
@@ -679,6 +748,7 @@ class GrokBaseLLMEntity(Entity):
             except openai.RateLimitError as err:
                 last_error = err
                 LOGGER.error("Rate limited by xAI on %s: %s", try_model, err)
+                del chat_log.content[content_checkpoint:]
                 break
             except openai.OpenAIError as err:
                 last_error = err
@@ -687,6 +757,7 @@ class GrokBaseLLMEntity(Entity):
                     try_model,
                     err,
                 )
+                del chat_log.content[content_checkpoint:]
                 continue
             except TokenLengthExceededError:
                 raise
@@ -695,6 +766,7 @@ class GrokBaseLLMEntity(Entity):
             except Exception as err:  # noqa: BLE001
                 last_error = err
                 LOGGER.warning("Unexpected error on %s: %s", try_model, err)
+                del chat_log.content[content_checkpoint:]
                 continue
 
         if isinstance(last_error, openai.RateLimitError):
@@ -720,6 +792,11 @@ class GrokBaseLLMEntity(Entity):
     ) -> None:
         """Run chat completion tool iterations for one model."""
         working_messages = messages
+        default_max_tokens = (
+            RECOMMENDED_AI_TASK_MAX_TOKENS
+            if service == "ai_task"
+            else RECOMMENDED_MAX_TOKENS
+        )
 
         for _iteration in range(max_iterations):
             if working_messages is None:
@@ -779,7 +856,7 @@ class GrokBaseLLMEntity(Entity):
                     client,
                     model=model,
                     messages=request_messages,
-                    max_tokens=options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS),
+                    max_tokens=options.get(CONF_MAX_TOKENS, default_max_tokens),
                     top_p=options.get(CONF_TOP_P, RECOMMENDED_TOP_P),
                     temperature=options.get(
                         CONF_TEMPERATURE, RECOMMENDED_TEMPERATURE
@@ -800,7 +877,9 @@ class GrokBaseLLMEntity(Entity):
             p_tok, c_tok = extract_usage(result)
 
             if getattr(message, "tool_calls", None):
-                ha_tool_calls = self._openai_tool_calls_to_ha(message.tool_calls)
+                ha_tool_calls, parse_errors = self._openai_tool_calls_to_ha(
+                    message.tool_calls
+                )
                 assistant_content = conversation.AssistantContent(
                     agent_id=agent_id,
                     content=message.content or "",
@@ -815,24 +894,45 @@ class GrokBaseLLMEntity(Entity):
                                 "id": tc.id,
                                 "type": "function",
                                 "function": {
-                                    "name": tc.tool_name,
-                                    "arguments": json.dumps(tc.tool_args),
+                                    "name": tc.function.name,
+                                    "arguments": tc.function.arguments,
                                 },
                             }
-                            for tc in ha_tool_calls
+                            for tc in message.tool_calls
                         ],
                     }
                 ]
+
+                # Pre-seed error results for malformed arg JSON so the tool
+                # is never executed with empty/guessed args (restores v1.8
+                # behavior).
+                tool_call_tasks: dict[str, Any] | None = None
+                if parse_errors:
+
+                    async def _const_result(payload: dict[str, Any]) -> dict[str, Any]:
+                        return payload
+
+                    tool_call_tasks = {
+                        call_id: self.hass.async_create_task(
+                            _const_result(payload),
+                            name=f"llm_tool_parse_error_{call_id}",
+                        )
+                        for call_id, payload in parse_errors.items()
+                    }
+
                 async for tool_response in chat_log.async_add_assistant_content(
-                    assistant_content
+                    assistant_content,
+                    tool_call_tasks=tool_call_tasks,
                 ):
                     tool_messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_response.tool_call_id,
                             "content": _tool_result_payload(
-                                getattr(tool_response, "result", None)
-                                or getattr(tool_response, "tool_result", None)
+                                getattr(tool_response, "tool_result", None)
+                                if getattr(tool_response, "tool_result", None)
+                                is not None
+                                else getattr(tool_response, "result", None)
                             ),
                         }
                     )
@@ -871,6 +971,6 @@ class GrokBaseLLMEntity(Entity):
 
             if choice.finish_reason == "length":
                 raise TokenLengthExceededError(
-                    options.get(CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS)
+                    options.get(CONF_MAX_TOKENS, default_max_tokens)
                 )
             break

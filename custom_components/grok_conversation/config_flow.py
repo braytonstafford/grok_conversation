@@ -62,6 +62,7 @@ from .const import (
     MODE_PIPELINE,
     MODE_TOOLS,
     RECOMMENDED_AI_TASK_OPTIONS,
+    RECOMMENDED_AI_TASK_MAX_TOKENS,
     RECOMMENDED_AUTO_MODEL_ROUTING,
     RECOMMENDED_BUDGET_WARN_USD,
     RECOMMENDED_CHAT_MODEL,
@@ -795,10 +796,15 @@ class GrokAITaskSubentryFlowHandler(ConfigSubentryFlow):
                         CONF_IMAGE_MODEL: user_input.get(
                             CONF_IMAGE_MODEL, RECOMMENDED_IMAGE_GENERATION_MODEL
                         ),
+                        # Always persist AI Task max_tokens so structured
+                        # replies aren't truncated under the Assist default.
+                        CONF_MAX_TOKENS: user_input.get(
+                            CONF_MAX_TOKENS, RECOMMENDED_AI_TASK_MAX_TOKENS
+                        )
+                        if not user_input.get(CONF_RECOMMENDED, True)
+                        else RECOMMENDED_AI_TASK_MAX_TOKENS,
                     }
                     if not data[CONF_RECOMMENDED]:
-                        if CONF_MAX_TOKENS in user_input:
-                            data[CONF_MAX_TOKENS] = user_input[CONF_MAX_TOKENS]
                         if CONF_TEMPERATURE in user_input:
                             data[CONF_TEMPERATURE] = user_input[CONF_TEMPERATURE]
 
@@ -879,7 +885,7 @@ class GrokAITaskSubentryFlowHandler(ConfigSubentryFlow):
                             "suggested_value": options.get(CONF_MAX_TOKENS)
                         },
                         default=options.get(
-                            CONF_MAX_TOKENS, RECOMMENDED_MAX_TOKENS
+                            CONF_MAX_TOKENS, RECOMMENDED_AI_TASK_MAX_TOKENS
                         ),
                     ): int,
                     vol.Optional(
