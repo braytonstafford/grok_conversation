@@ -142,7 +142,7 @@ async def test_migrate_adds_ai_task_subentry(
         assert await hass.config_entries.async_setup(entry.entry_id)
         await hass.async_block_till_done()
 
-    assert entry.minor_version == 2
+    assert entry.minor_version == 3
     assert any(
         s.subentry_type == "ai_task_data" for s in entry.subentries.values()
     )

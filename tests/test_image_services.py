@@ -425,10 +425,7 @@ async def test_generate_content_with_image_uses_vision(
             "custom_components.grok_conversation.async_chat_completion",
             new_callable=AsyncMock,
         ) as mock_chat,
-        patch(
-            "homeassistant.core.Config.is_allowed_path",
-            return_value=True,
-        ),
+        patch.object(hass.config, "is_allowed_path", return_value=True),
         patch(
             "custom_components.grok_conversation.encode_file",
             return_value=("image/jpeg", "qq"),
