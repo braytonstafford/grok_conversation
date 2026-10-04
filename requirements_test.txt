@@ -1,7 +1,9 @@
-openai==2.45.0
+# Latest CI leg: pin to HA core's current openai; manifest allows >=2.45.0,<4.
+openai==3.10.0
 voluptuous-openapi
 # Pin a recent PHACC that includes Home Assistant 2026.7+ (ai_task + subentries).
-# Requires Python >=3.14.2 (HA 2026.7+).
+# Requires Python >=3.14.2 (HA 2026.7+). Latest CI resolves this to HA 2026.10+.
+# The pytest workflow also runs a min-HA matrix leg via requirements_test_min.txt.
 pytest-homeassistant-custom-component>=0.13.317
 # Component transitive requirements so CI can import platforms without
 # waiting on on-demand installs.

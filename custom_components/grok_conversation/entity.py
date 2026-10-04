@@ -24,6 +24,9 @@ try:
 except ImportError:  # pragma: no cover - HA < 2026.8 may lack probatio
     probatio = None  # type: ignore[assignment]
 
+# HA 2026.10+; absent on 2026.7–2026.9 — fall back to plain dict tool results.
+ToolResult = getattr(llm, "ToolResult", None)
+
 from .api_helpers import async_chat_completion, extract_usage
 from .const import (
     CONF_BUDGET_WARN_USD,
@@ -301,8 +304,20 @@ def format_structured_output(
 
 
 def _tool_result_payload(tool_result: Any) -> str:
-    """Serialize tool results for the model."""
-    if hasattr(tool_result, "data"):
+    """Serialize tool results for the model.
+
+    HA 2026.10+ yields ``llm.ToolResult`` (``data`` / ``error``). Older
+    HA versions pass a plain JSON object.
+    """
+    if ToolResult is not None and isinstance(tool_result, ToolResult):
+        payload: dict[str, Any] = {"data": tool_result.data}
+        if tool_result.error:
+            payload["error"] = True
+        try:
+            return json.dumps(payload, default=str)
+        except TypeError:
+            return json.dumps({"result": str(tool_result.data)})
+    if hasattr(tool_result, "data") and not isinstance(tool_result, dict):
         payload = {
             "data": tool_result.data,
             "error": getattr(tool_result, "error", False),
@@ -324,6 +339,7 @@ def convert_content_to_param(
     messages: list[ChatCompletionMessageParam] = []
 
     if isinstance(content, conversation.ToolResultContent):
+        # Prefer ``result`` (ToolResult); ``tool_result`` is deprecated in HA 2026.10+.
         result = getattr(content, "result", None)
         if result is None:
             result = getattr(content, "tool_result", None)
@@ -918,11 +934,14 @@ class GrokBaseLLMEntity(Entity):
 
                 # Pre-seed error results for malformed arg JSON so the tool
                 # is never executed with empty/guessed args (restores v1.8
-                # behavior).
+                # behavior). HA 2026.10+ requires llm.ToolResult; older HA
+                # accepts a plain dict.
                 tool_call_tasks: dict[str, Any] | None = None
                 if parse_errors:
 
-                    async def _const_result(payload: dict[str, Any]) -> dict[str, Any]:
+                    async def _const_result(payload: dict[str, Any]) -> Any:
+                        if ToolResult is not None:
+                            return ToolResult(data=payload, error=True)
                         return payload
 
                     tool_call_tasks = {
@@ -937,16 +956,14 @@ class GrokBaseLLMEntity(Entity):
                     assistant_content,
                     tool_call_tasks=tool_call_tasks,
                 ):
+                    result = getattr(tool_response, "result", None)
+                    if result is None:
+                        result = getattr(tool_response, "tool_result", None)
                     tool_messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_response.tool_call_id,
-                            "content": _tool_result_payload(
-                                getattr(tool_response, "tool_result", None)
-                                if getattr(tool_response, "tool_result", None)
-                                is not None
-                                else getattr(tool_response, "result", None)
-                            ),
+                            "content": _tool_result_payload(result),
                         }
                     )
 

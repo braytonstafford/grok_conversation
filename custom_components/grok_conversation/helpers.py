@@ -6,7 +6,7 @@ import os
 import re
 import sqlite3
 import time
-from typing import Any
+from typing import Any, cast
 from urllib import parse
 
 from bs4 import BeautifulSoup
@@ -143,14 +143,16 @@ async def validate_authentication(
             azure_endpoint=base_url,
             api_version=api_version,
             organization=organization,
-            http_client=get_async_client(hass),
+            # Legacy HTTPX clients are supported at runtime only (openai 3.x / HTTPX2).
+            http_client=cast(Any, get_async_client(hass)),
         )
     else:
         client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             organization=organization,
-            http_client=get_async_client(hass),
+            # Legacy HTTPX clients are supported at runtime only (openai 3.x / HTTPX2).
+            http_client=cast(Any, get_async_client(hass)),
         )
 
     await hass.async_add_executor_job(partial(client.models.list, timeout=10))
