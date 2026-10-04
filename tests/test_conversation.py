@@ -63,9 +63,11 @@ class _RecordingTool(llm.Tool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> dict[str, Any]:
+    ) -> llm.ToolResult:
         self.calls.append(dict(tool_input.tool_args))
-        return {"ok": True, "action": tool_input.tool_args.get("action")}
+        return llm.ToolResult(
+            data={"ok": True, "action": tool_input.tool_args.get("action")}
+        )
 
 
 def _mock_llm_api(hass: HomeAssistant, tool: llm.Tool) -> llm.APIInstance:

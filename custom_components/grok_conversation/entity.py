@@ -301,7 +301,19 @@ def format_structured_output(
 
 
 def _tool_result_payload(tool_result: Any) -> str:
-    """Serialize tool results for the model."""
+    """Serialize tool results for the model.
+
+    HA 2026.10+ yields ``llm.ToolResult`` (``data`` / ``error``). Older
+    paths may still pass a plain JSON object.
+    """
+    if isinstance(tool_result, llm.ToolResult):
+        payload: dict[str, Any] = {"data": tool_result.data}
+        if tool_result.error:
+            payload["error"] = True
+        try:
+            return json.dumps(payload, default=str)
+        except TypeError:
+            return json.dumps({"result": str(tool_result.data)})
     if hasattr(tool_result, "data"):
         payload = {
             "data": tool_result.data,
@@ -324,6 +336,7 @@ def convert_content_to_param(
     messages: list[ChatCompletionMessageParam] = []
 
     if isinstance(content, conversation.ToolResultContent):
+        # Prefer ``result`` (ToolResult); ``tool_result`` is deprecated in HA 2026.10+.
         result = getattr(content, "result", None)
         if result is None:
             result = getattr(content, "tool_result", None)
@@ -918,12 +931,14 @@ class GrokBaseLLMEntity(Entity):
 
                 # Pre-seed error results for malformed arg JSON so the tool
                 # is never executed with empty/guessed args (restores v1.8
-                # behavior).
+                # behavior). HA 2026.10+ requires llm.ToolResult here.
                 tool_call_tasks: dict[str, Any] | None = None
                 if parse_errors:
 
-                    async def _const_result(payload: dict[str, Any]) -> dict[str, Any]:
-                        return payload
+                    async def _const_result(
+                        payload: dict[str, Any],
+                    ) -> llm.ToolResult:
+                        return llm.ToolResult(data=payload, error=True)
 
                     tool_call_tasks = {
                         call_id: self.hass.async_create_task(
@@ -937,16 +952,14 @@ class GrokBaseLLMEntity(Entity):
                     assistant_content,
                     tool_call_tasks=tool_call_tasks,
                 ):
+                    result = getattr(tool_response, "result", None)
+                    if result is None:
+                        result = getattr(tool_response, "tool_result", None)
                     tool_messages.append(
                         {
                             "role": "tool",
                             "tool_call_id": tool_response.tool_call_id,
-                            "content": _tool_result_payload(
-                                getattr(tool_response, "tool_result", None)
-                                if getattr(tool_response, "tool_result", None)
-                                is not None
-                                else getattr(tool_response, "result", None)
-                            ),
+                            "content": _tool_result_payload(result),
                         }
                     )
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import openai
 import voluptuous as vol
@@ -145,7 +145,8 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
         client = openai.AsyncOpenAI(
             api_key=data[CONF_API_KEY],
             base_url="https://api.x.ai/v1",
-            http_client=get_async_client(hass),
+            # Legacy HTTPX clients are supported at runtime only (openai 3.x / HTTPX2).
+            http_client=cast(Any, get_async_client(hass)),
         )
         return client.with_options(timeout=10.0).models.list()
 
@@ -257,7 +258,8 @@ class OpenAIOptionsFlow(OptionsFlow):
         client = openai.AsyncOpenAI(
             api_key=api_key,
             base_url="https://api.x.ai/v1",
-            http_client=get_async_client(self.hass),
+            # Legacy HTTPX clients are supported at runtime only (openai 3.x / HTTPX2).
+            http_client=cast(Any, get_async_client(self.hass)),
         )
         models = await async_list_chat_models(client)
         # Never offer retired ids in the picker
@@ -770,7 +772,8 @@ class GrokAITaskSubentryFlowHandler(ConfigSubentryFlow):
         client = openai.AsyncOpenAI(
             api_key=api_key,
             base_url="https://api.x.ai/v1",
-            http_client=get_async_client(self.hass),
+            # Legacy HTTPX clients are supported at runtime only (openai 3.x / HTTPX2).
+            http_client=cast(Any, get_async_client(self.hass)),
         )
         models = await async_list_chat_models(client)
         models = [m for m in models if m not in RETIRED_MODELS]
