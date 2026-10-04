@@ -24,6 +24,9 @@ try:
 except ImportError:  # pragma: no cover - HA < 2026.8 may lack probatio
     probatio = None  # type: ignore[assignment]
 
+# HA 2026.10+; absent on 2026.7–2026.9 — fall back to plain dict tool results.
+ToolResult = getattr(llm, "ToolResult", None)
+
 from .api_helpers import async_chat_completion, extract_usage
 from .const import (
     CONF_BUDGET_WARN_USD,
@@ -304,9 +307,9 @@ def _tool_result_payload(tool_result: Any) -> str:
     """Serialize tool results for the model.
 
     HA 2026.10+ yields ``llm.ToolResult`` (``data`` / ``error``). Older
-    paths may still pass a plain JSON object.
+    HA versions pass a plain JSON object.
     """
-    if isinstance(tool_result, llm.ToolResult):
+    if ToolResult is not None and isinstance(tool_result, ToolResult):
         payload: dict[str, Any] = {"data": tool_result.data}
         if tool_result.error:
             payload["error"] = True
@@ -314,7 +317,7 @@ def _tool_result_payload(tool_result: Any) -> str:
             return json.dumps(payload, default=str)
         except TypeError:
             return json.dumps({"result": str(tool_result.data)})
-    if hasattr(tool_result, "data"):
+    if hasattr(tool_result, "data") and not isinstance(tool_result, dict):
         payload = {
             "data": tool_result.data,
             "error": getattr(tool_result, "error", False),
@@ -931,14 +934,15 @@ class GrokBaseLLMEntity(Entity):
 
                 # Pre-seed error results for malformed arg JSON so the tool
                 # is never executed with empty/guessed args (restores v1.8
-                # behavior). HA 2026.10+ requires llm.ToolResult here.
+                # behavior). HA 2026.10+ requires llm.ToolResult; older HA
+                # accepts a plain dict.
                 tool_call_tasks: dict[str, Any] | None = None
                 if parse_errors:
 
-                    async def _const_result(
-                        payload: dict[str, Any],
-                    ) -> llm.ToolResult:
-                        return llm.ToolResult(data=payload, error=True)
+                    async def _const_result(payload: dict[str, Any]) -> Any:
+                        if ToolResult is not None:
+                            return ToolResult(data=payload, error=True)
+                        return payload
 
                     tool_call_tasks = {
                         call_id: self.hass.async_create_task(

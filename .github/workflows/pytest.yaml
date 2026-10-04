@@ -19,6 +19,15 @@ jobs:
   pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: latest
+            requirements: requirements_test.txt
+          - name: ha-2026.7
+            requirements: requirements_test_min.txt
+    name: pytest (${{ matrix.name }})
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -29,12 +38,18 @@ jobs:
           python-version: "3.14"
           allow-prereleases: true
           cache: pip
-          cache-dependency-path: requirements_test.txt
+          cache-dependency-path: |
+            requirements_test.txt
+            requirements_test_min.txt
 
       - name: Install test dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install -r requirements_test.txt
+          pip install -r ${{ matrix.requirements }}
+
+      - name: Show resolved HA / openai
+        run: |
+          python -c "import homeassistant as ha, openai, importlib.metadata as m; print('homeassistant', getattr(ha, '__version__', m.version('homeassistant'))); print('openai', openai.__version__); import homeassistant.helpers.llm as llm; print('ToolResult', getattr(llm, 'ToolResult', None))"
 
       - name: Run pytest
         env:

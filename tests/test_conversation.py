@@ -19,6 +19,9 @@ from custom_components.grok_conversation.const import (
     DOMAIN,
 )
 
+# HA 2026.10+; absent on 2026.7–2026.9.
+ToolResult = getattr(llm, "ToolResult", None)
+
 
 def _completion_response(text: str = "", *, tool_calls=None, model: str | None = None):
     """Build a minimal chat.completions-like response."""
@@ -63,11 +66,12 @@ class _RecordingTool(llm.Tool):
         hass: HomeAssistant,
         tool_input: llm.ToolInput,
         llm_context: llm.LLMContext,
-    ) -> llm.ToolResult:
+    ) -> Any:
         self.calls.append(dict(tool_input.tool_args))
-        return llm.ToolResult(
-            data={"ok": True, "action": tool_input.tool_args.get("action")}
-        )
+        data = {"ok": True, "action": tool_input.tool_args.get("action")}
+        if ToolResult is not None:
+            return ToolResult(data=data)
+        return data
 
 
 def _mock_llm_api(hass: HomeAssistant, tool: llm.Tool) -> llm.APIInstance:
