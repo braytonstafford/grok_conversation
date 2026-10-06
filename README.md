@@ -187,7 +187,7 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 
 **1.10.0** — `generate_image` uses documented xAI params (`aspect_ratio` / `resolution` / `quality` / `n` / `response_format`); deprecated `size` / `style` / `quality: standard|hd` still accepted with warnings; `quality` is sent only for `grok-imagine-image-2.0`. Vision default `grok-4.3` with options picker + shared resolution (image-capable chat model wins; vision option is fallback). Replace retired fast/fallback defaults (`grok-4-1-fast-non-reasoning`, `grok-3-mini-fast`) with `grok-4.3` after the [May 15 2026 retirement](https://docs.x.ai/developers/migration/may-15-retirement) (no cheaper/faster documented non-reasoning tool-calling model remains). Options picker rejects retired ids; runtime remap + warning. Minor-3 migration rewrites stored vision/fast/fallback/chat ids on entry options and conversation/ai_task_data subentries.
 
-**1.9.0** — AI Task platform (`generate_data` + structured output + image attachments). Shared LLM entity base. Config subentry + migration (minor 2).
+**1.9.0** — AI Task platform (`generate_data` + structured output + image attachments). Shared LLM entity base. Config subentry + migration (minor 2). `generate_image` deferred to a follow-up.
 
 **1.8.0** — Pipeline live-search deny-list (#30); satellite TTS prewarm before continue (#31); persona on search pass + no spoken citations (#32). Thanks @CodyJon.
 
