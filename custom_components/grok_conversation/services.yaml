@@ -83,6 +83,20 @@ generate_image:
           options:
             - "url"
             - "b64_json"
+    reference_images:
+      name: "Reference images"
+      description: >
+        Optional reference image(s) for editing / conditioning. Requires an
+        edit-capable model (grok-imagine-image-2.0 or grok-imagine-image-quality).
+        Accepts a media-source id, local path (allowlist_external_dirs),
+        camera./image. entity id, or public http(s) URL. Up to 5 images
+        (JPEG, PNG, or WebP; max 50 MB each).
+      required: false
+      example: |
+        - /config/www/reference.png
+      selector:
+        text:
+          multiline: true
 
 generate_content:
   name: "Generate content"

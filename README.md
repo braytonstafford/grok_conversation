@@ -17,7 +17,7 @@ One HACS install → **Conversation agent**, **Speech-to-text**, **Text-to-speec
 | **Conversation** | Voice assistants → Conversation agent → **Grok** | Chat / tools / live search |
 | **Speech-to-text** | Voice assistants → Speech-to-text → **xAI Grok** | `POST https://api.x.ai/v1/stt` |
 | **Text-to-speech** | Voice assistants → Text-to-speech → **xAI Grok** | `POST https://api.x.ai/v1/tts` |
-| **AI Task** | Automations → `ai_task.generate_data` → **Grok AI Task** | Chat Completions + structured output / attachments |
+| **AI Task** | Automations → `ai_task.generate_data` / `ai_task.generate_image` → **Grok AI Task** | Chat Completions + Imagine generate/edit |
 
 Replace Piper / speech-to-phrase with Grok cloud quality while keeping your Satellite1 (or any Assist pipeline) wake word local.
 
@@ -28,7 +28,7 @@ Replace Piper / speech-to-phrase with Grok cloud quality while keeping your Sate
 | Feature | Description |
 | --- | --- |
 | **Assist / LLM tools** | Control exposed HA entities via the standard LLM HASS API |
-| **AI Task** | `ai_task.generate_data` with free text, structured JSON, and image attachments |
+| **AI Task** | `ai_task.generate_data` (structured JSON + attachments) and `ai_task.generate_image` (optional reference attachments → Imagine edits) |
 | **xAI TTS** | 25+ expressive voices (Eve, Ara, Rex, Luna, …), speed, languages |
 | **xAI STT** | Multilingual transcription (25+ languages), PCM/WAV from Assist satellites |
 | **Voice API check** | Probes the key for Voice access at setup; warns if chat-only |
@@ -102,7 +102,7 @@ Setup probes your key against the Voice endpoints. If chat works but TTS/STT fai
 | Default STT language | Formatting language for transcripts |
 | Live Search | off / web / x / full |
 | Interaction mode | tools / pipeline / chat_only |
-| AI Task subentry | Name, chat model, optional image model (generate_image deferred) |
+| AI Task subentry | Name, chat model, image model (`ai_task.generate_image`; use `grok-imagine-image-2.0` for reference edits) |
 
 ---
 
@@ -110,17 +110,18 @@ Setup probes your key against the Voice endpoints. If chat works but TTS/STT fai
 
 ### `grok_conversation.generate_image`
 
-Generate images with Grok Imagine. Only documented xAI parameters are sent.
+Generate images with Grok Imagine. Only documented xAI parameters are sent. With `reference_images`, the call uses `POST /v1/images/edits` (JSON data URI / public URL) instead of `/v1/images/generations`.
 
 | Field | Notes |
 | --- | --- |
 | `prompt` | Required |
-| `model` | Default `grok-imagine-image`. xAI recommends `grok-imagine-image-2.0` |
+| `model` | Default `grok-imagine-image`. xAI recommends `grok-imagine-image-2.0`. Edits require `grok-imagine-image-2.0` or `grok-imagine-image-quality` |
 | `aspect_ratio` | Optional (`1:1`, `16:9`, `9:16`, …). Omit for xAI `auto` |
 | `resolution` | Optional `1k` / `2k` |
 | `quality` | Optional `low` / `medium` / `auto` (2.0 only) |
 | `n` | 1–10 (default 1) |
 | `response_format` | `url` (default) or `b64_json` |
+| `reference_images` | Optional. Media-source id, local path (`allowlist_external_dirs`), `camera.`/`image.` entity, or public `http(s)` URL. JPEG/PNG/WebP, ≤50 MB, up to 5 |
 
 Deprecated (still accepted): `size` (mapped to aspect ratio), `style` (ignored), `quality: standard|hd` (ignored).
 
@@ -132,6 +133,29 @@ data:
   aspect_ratio: "16:9"
   response_format: b64_json
   model: grok-imagine-image-2.0
+```
+
+Edit with a reference image (snapshot or local file):
+
+```yaml
+action: grok_conversation.generate_image
+data:
+  config_entry: YOUR_ENTRY_ID
+  model: grok-imagine-image-2.0
+  prompt: Render this as a pencil sketch with detailed shading
+  reference_images:
+    - /config/www/living_room.png
+```
+
+```yaml
+action: ai_task.generate_image
+data:
+  task_name: Sketch the driveway
+  entity_id: ai_task.grok_ai_task
+  instructions: Render this as a pencil sketch with detailed shading
+  attachments:
+    - media_content_id: media-source://camera/camera.driveway
+      media_content_type: image/jpeg
 ```
 
 Response includes `images` (list of `{url}` or `{b64_json}` plus `mime_type` when present). When `response_format=url`, `url` is also set to the first image URL.
@@ -168,7 +192,7 @@ custom_components/grok_conversation/
   __init__.py          # setup + services + platforms + migration
   entity.py            # shared LLM base (tool loop, structured output, attachments)
   conversation.py      # Assist conversation agent
-  ai_task.py           # AI Task entity (generate_data)
+  ai_task.py           # AI Task entity (generate_data + generate_image)
   tts.py               # TextToSpeechEntity → /v1/tts
   stt.py               # SpeechToTextEntity → /v1/stt
   voice_api.py         # HTTP client + Voice probe
@@ -182,6 +206,8 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 ---
 
 ## Version
+
+**1.11.0** — Image generation reference attachments (#45): `ai_task.generate_image` enabled; optional `reference_images` on `grok_conversation.generate_image` and HA media attachments on `ai_task.generate_image` call xAI `POST /v1/images/edits` (JSON `image`/`images` with data URI or public URL — not OpenAI multipart). Edit-capable models: `grok-imagine-image-2.0` / `grok-imagine-image-quality`. Validates JPEG/PNG/WebP and 50 MB Files API ceiling. Text-only generation unchanged when no reference is given.
 
 **1.10.4** — Send `reasoning_effort` / `reasoning.effort` only for documented families (`grok-4.3` / `4.5` / `4.6` / `4.7`, `grok-build-latest`, `*multi-agent*`) via an explicit allow-list (#42). `*-non-reasoning*`, `grok-4.20*-reasoning`, and unknown ids omit the parameter (conservative). Unset / recommended effort is provider default (not sent) on both the main chat and live-search passes — only an explicit Low/Medium/High is sent. Entries that already store Low/Medium/High (including the old UI default Low) now have it sent to the allow-listed models (4.3/4.5/4.6/4.7, multi-agent); set Provider default (not sent) to omit. A stored value on `grok-4.20*-reasoning` is no longer sent.
 

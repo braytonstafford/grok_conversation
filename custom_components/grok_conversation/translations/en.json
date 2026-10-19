@@ -26,14 +26,14 @@
           "data": {
             "name": "Name",
             "chat_model": "Chat model",
-            "image_model": "Image model (optional, for future generate_image)",
+            "image_model": "Image model",
             "recommended": "Use recommended sampling settings",
             "max_tokens": "Maximum tokens",
             "temperature": "Temperature"
           },
           "data_description": {
             "chat_model": "Model used for ai_task.generate_data. Options come from GET /v1/models.",
-            "image_model": "Reserved for ai_task.generate_image (deferred). Default grok-imagine-image.",
+            "image_model": "Model used for ai_task.generate_image. Default grok-imagine-image. Use grok-imagine-image-2.0 (or grok-imagine-image-quality) when attaching a reference image.",
             "recommended": "When enabled, uses default max tokens and temperature."
           }
         }
@@ -139,6 +139,11 @@
         "response_format": {
           "name": "Response format",
           "description": "Return a temporary URL or base64 JSON"
+        },
+        "reference_images": {
+          "name": "Reference images",
+          "description": "Optional reference image(s) for editing. Media-source id, local path, camera/image entity, or public URL. Requires grok-imagine-image-2.0 or grok-imagine-image-quality. JPEG/PNG/WebP, max 50 MB, up to 5.",
+          "example": "/config/www/reference.png"
         }
       }
     },
