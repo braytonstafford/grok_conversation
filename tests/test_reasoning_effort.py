@@ -53,12 +53,16 @@ from custom_components.grok_conversation.const import (
         ("grok-4.50", False),
         ("grok-4.200", False),
         ("grok-4.3x", False),
-        # Explicit non-reasoning — always excluded
+        # Explicit non-reasoning — always excluded (including ids that would
+        # otherwise match an allow-list prefix or multi-agent)
         ("grok-4.20-0309-non-reasoning", False),
         ("grok-4-1-fast-non-reasoning", False),
         ("grok-4-fast-non-reasoning", False),
         ("GROK-4.20-0309-NON-REASONING", False),
         ("grok-4.20-non-reasoning-latest", False),
+        ("grok-4.20-multi-agent-non-reasoning", False),
+        ("grok-4.3-non-reasoning", False),
+        ("grok-4.5-non-reasoning", False),
         # Reasoning-tagged but no documented effort list → omit
         ("grok-4-fast-reasoning", False),
         ("grok-4.20-0309-reasoning", False),
@@ -195,6 +199,23 @@ async def test_chat_completion_includes_reasoning_for_supported(
 
 
 @pytest.mark.asyncio
+async def test_chat_completion_normalizes_effort_case_and_whitespace() -> None:
+    """Chat Completions send strip().lower() of the effort value."""
+    client = MagicMock()
+    client.chat.completions.create = AsyncMock(return_value=MagicMock())
+
+    await async_chat_completion(
+        client,
+        model="grok-4.3-latest",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning_effort=" HIGH ",
+    )
+
+    kwargs = client.chat.completions.create.await_args.kwargs
+    assert kwargs["reasoning_effort"] == "high"
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("effort", ["none", "NONE", " None ", None])
 async def test_chat_completion_skips_effort_none(effort: str | None) -> None:
     """Effort none/None is never sent, even on a supported model."""
@@ -260,6 +281,22 @@ async def test_responses_includes_reasoning_for_supported(model: str) -> None:
         model=model,
         messages=[{"role": "user", "content": "hi"}],
         reasoning_effort="high",
+    )
+
+    kwargs = client.responses.create.await_args.kwargs
+    assert kwargs["reasoning"] == {"effort": "high"}
+
+
+@pytest.mark.asyncio
+async def test_responses_normalizes_effort_case_and_whitespace() -> None:
+    """Responses API send strip().lower() of the effort value."""
+    client = _mock_responses_client()
+
+    await async_responses_completion(
+        client,
+        model="grok-4.7",
+        messages=[{"role": "user", "content": "hi"}],
+        reasoning_effort=" HIGH ",
     )
 
     kwargs = client.responses.create.await_args.kwargs
