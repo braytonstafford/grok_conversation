@@ -240,10 +240,56 @@ def extract_usage(response: Any) -> tuple[int, int]:
     return int(prompt or 0), int(completion or 0)
 
 
+# Models / aliases documented to accept reasoning_effort (Chat Completions) or
+# reasoning.effort (Responses). Keep extendable when new families ship.
+#
+# Sources (checked for #42):
+# - https://docs.x.ai/developers/model-capabilities/text/reasoning
+#   (grok-4.5 / 4.6 / 4.7 + grok-4.20-multi-agent)
+# - https://docs.x.ai/developers/models/grok-4.3
+#   (efforts: none/low/medium/high/xhigh; alias grok-4.3-latest)
+# - https://docs.x.ai/developers/models/grok-4.5
+#   (alias grok-4.5-latest, grok-build-latest)
+# - https://docs.x.ai/developers/models/grok-4.6
+# - https://docs.x.ai/developers/models/grok-4.7
+# - https://docs.x.ai/developers/models/grok-4.20-0309-reasoning
+#   (Reasoning: Yes; aliases include bare grok-4.20 / grok-4.20-0309)
+# - https://docs.x.ai/developers/models/grok-4.20-0309-non-reasoning
+#   (Reasoning: No — always excluded)
+#
+# Ambiguous / undocumented effort support → omit (conservative): e.g.
+# grok-build-0.1 (Reasoning: Yes but no effort list), bare grok-4 / grok-3*,
+# and unknown future ids until added here.
+_REASONING_EFFORT_ID_PREFIXES: tuple[str, ...] = (
+    "grok-4.3",
+    "grok-4.5",
+    "grok-4.6",
+    "grok-4.7",
+    "grok-4.20",
+    "grok-build-latest",
+)
+
+
 def _supports_reasoning_effort(model: str) -> bool:
-    """True for reasoning model ids; "non-reasoning" ids reject reasoning effort."""
-    name = (model or "").lower()
-    return "reasoning" in name and "non-reasoning" not in name
+    """True when the model id is documented to accept a reasoning effort param.
+
+    ``*-non-reasoning*`` ids always return False (xAI 400). Explicit
+    ``*reasoning*`` ids and the allow-listed families return True. Unknown /
+    future ids default to False so we never send an unsupported parameter.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if "non-reasoning" in name:
+        return False
+    # Tagged reasoning / multi-agent ids (effort controls depth or agent count).
+    if "reasoning" in name or "multi-agent" in name:
+        return True
+    for prefix in _REASONING_EFFORT_ID_PREFIXES:
+        if name == prefix or name.startswith(f"{prefix}-"):
+            return True
+    return False
+
 
 
 async def async_chat_completion(

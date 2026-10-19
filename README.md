@@ -183,6 +183,8 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 
 ## Version
 
+**1.10.4** — Send `reasoning_effort` / `reasoning.effort` for documented suffix-less families (`grok-4.3` / `4.5` / `4.6` / `4.7`, `grok-4.20`, …) via an explicit allow-list instead of the `"reasoning" in id` heuristic (#42). `*-non-reasoning*` still excluded; unknown ids omit the parameter (conservative).
+
 **1.10.3** — Lower openai floor to `>=2.21.0,<4` so the requirement resolves under HA 2026.7.0 (`openai==2.21.0`); 2026.8+ still resolve to their core pins (2.45.0 / 3.10.0).
 
 **1.10.2** — Do not send `reasoning_effort` / `reasoning.effort` to `-non-reasoning` model ids (fixes silent fallback after xAI 400). Options UI adds Provider default (not sent) (`none`) for reasoning effort (omits the param; does not disable reasoning).
