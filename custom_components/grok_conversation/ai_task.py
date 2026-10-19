@@ -148,6 +148,7 @@ class GrokAITaskEntity(ai_task.AITaskEntity, GrokBaseLLMEntity):
             async_generate_or_edit_image,
             async_reference_images_from_attachments,
             format_images_response,
+            require_edit_capable_model,
         )
 
         model = self.subentry.data.get(
@@ -163,6 +164,7 @@ class GrokAITaskEntity(ai_task.AITaskEntity, GrokBaseLLMEntity):
         attachments = getattr(task, "attachments", None) or None
         reference_images = None
         if attachments:
+            require_edit_capable_model(model)
             reference_images = await async_reference_images_from_attachments(
                 self.hass, list(attachments)
             )

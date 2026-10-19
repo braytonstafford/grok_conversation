@@ -121,7 +121,7 @@ Generate images with Grok Imagine. Only documented xAI parameters are sent. With
 | `quality` | Optional `low` / `medium` / `auto` (2.0 only) |
 | `n` | 1–10 (default 1) |
 | `response_format` | `url` (default) or `b64_json` |
-| `reference_images` | Optional. Media-source id, local path (`allowlist_external_dirs`), `camera.`/`image.` entity, or public `http(s)` URL. JPEG/PNG/WebP, ≤50 MB, up to 5 |
+| `reference_images` | Optional. Media-source id, local path (`allowlist_external_dirs`), `camera.`/`image.` entity, or public `http(s)` URL. JPEG/PNG/WebP (magic-byte sniffed), ≤10 MB each / 20 MB total, up to 5. **Requires an edit-capable model** (`grok-imagine-image-2.0` or `grok-imagine-image-quality`). The default `grok-imagine-image` is text-to-image only and rejects attachments even though the AI Task entity advertises attachment support for `generate_data` |
 
 Deprecated (still accepted): `size` (mapped to aspect ratio), `style` (ignored), `quality: standard|hd` (ignored).
 
@@ -207,7 +207,7 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 
 ## Version
 
-**1.11.0** — Image generation reference attachments (#45): `ai_task.generate_image` enabled; optional `reference_images` on `grok_conversation.generate_image` and HA media attachments on `ai_task.generate_image` call xAI `POST /v1/images/edits` (JSON `image`/`images` with data URI or public URL — not OpenAI multipart). Edit-capable models: `grok-imagine-image-2.0` / `grok-imagine-image-quality`. Validates JPEG/PNG/WebP and 50 MB Files API ceiling. Text-only generation unchanged when no reference is given.
+**1.11.0** — Image generation reference attachments (#45): `ai_task.generate_image` enabled; optional `reference_images` on `grok_conversation.generate_image` and HA media attachments on `ai_task.generate_image` call xAI `POST /v1/images/edits` (JSON `image`/`images` with data URI or public URL — not OpenAI multipart). Edit-capable models: `grok-imagine-image-2.0` / `grok-imagine-image-quality` (default `grok-imagine-image` rejects refs — set the AI Task image model or service `model`). Validates JPEG/PNG/WebP via magic bytes; 10 MB/image and 20 MB aggregate (stat before read); camera/image refs require `POLICY_READ`; paths use allowlist via executor. Text-only generation unchanged when no reference is given.
 
 **1.10.4** — Send `reasoning_effort` / `reasoning.effort` only for documented families (`grok-4.3` / `4.5` / `4.6` / `4.7`, `grok-build-latest`, `*multi-agent*`) via an explicit allow-list (#42). `*-non-reasoning*`, `grok-4.20*-reasoning`, and unknown ids omit the parameter (conservative). Unset / recommended effort is provider default (not sent) on both the main chat and live-search passes — only an explicit Low/Medium/High is sent. Entries that already store Low/Medium/High (including the old UI default Low) now have it sent to the allow-listed models (4.3/4.5/4.6/4.7, multi-agent); set Provider default (not sent) to omit. A stored value on `grok-4.20*-reasoning` is no longer sent.
 

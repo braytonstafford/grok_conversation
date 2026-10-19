@@ -90,7 +90,9 @@ generate_image:
         edit-capable model (grok-imagine-image-2.0 or grok-imagine-image-quality).
         Accepts a media-source id, local path (allowlist_external_dirs),
         camera./image. entity id, or public http(s) URL. Up to 5 images
-        (JPEG, PNG, or WebP; max 50 MB each).
+        (JPEG, PNG, or WebP; max 10 MB each / 20 MB total). Requires
+        grok-imagine-image-2.0 or grok-imagine-image-quality (default
+        grok-imagine-image rejects attachments).
       required: false
       example: |
         - /config/www/reference.png

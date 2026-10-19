@@ -19,6 +19,8 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 
 from custom_components.grok_conversation import (
     _DEPRECATED_FIELD_WARNED,
+    _read_path_bytes,
+    _stat_and_read_path,
     async_migrate_entry,
     build_image_edit_body,
     build_image_generate_kwargs,
@@ -27,6 +29,7 @@ from custom_components.grok_conversation import (
     model_supports_image_quality,
     reference_image_data_uri,
     resolve_service_vision_model,
+    sniff_image_mime,
     validate_reference_image_bytes,
 )
 from custom_components.grok_conversation.config_flow import RECOMMENDED_OPTIONS
@@ -41,6 +44,7 @@ from custom_components.grok_conversation.const import (
     DOMAIN,
     IMAGE_EDIT_MAX_BYTES,
     IMAGE_EDIT_MAX_IMAGES,
+    IMAGE_EDIT_MAX_TOTAL_BYTES,
     RECOMMENDED_AI_TASK_OPTIONS,
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_FALLBACK_MODEL,
@@ -55,6 +59,11 @@ from custom_components.grok_conversation.const import (
     SERVICE_QUERY_IMAGE,
     _RETIRED_CHAT_WARNED,
 )
+
+# Minimal magic-byte payloads for sniffing tests (not full images).
+_PNG = b"\x89PNG\r\n\x1a\n" + b"\x00" * 8
+_JPEG = b"\xff\xd8\xff\xd9"
+_WEBP = b"RIFF\x08\x00\x00\x00WEBP"
 
 
 @pytest.fixture(autouse=True)
@@ -124,29 +133,54 @@ def test_model_supports_image_edit_undocumented(model: str | None) -> None:
     assert not model_supports_image_edit(model)
 
 
-def test_validate_reference_image_accepts_documented_mimes() -> None:
-    """JPEG/PNG/WebP under 50 MB pass; image/jpg normalizes."""
-    assert validate_reference_image_bytes(b"abc", "image/png") == "image/png"
-    assert validate_reference_image_bytes(b"abc", "image/jpeg") == "image/jpeg"
-    assert validate_reference_image_bytes(b"abc", "image/jpg") == "image/jpeg"
-    assert validate_reference_image_bytes(b"abc", "image/webp") == "image/webp"
+def test_validate_reference_image_sniffs_magic_bytes() -> None:
+    """JPEG/PNG/WebP are detected from content, not the declared type."""
+    assert sniff_image_mime(_PNG) == "image/png"
+    assert sniff_image_mime(_JPEG) == "image/jpeg"
+    assert sniff_image_mime(_WEBP) == "image/webp"
+    assert validate_reference_image_bytes(_PNG, "image/gif") == "image/png"
+    assert validate_reference_image_bytes(_JPEG) == "image/jpeg"
+    assert validate_reference_image_bytes(_WEBP, "image/webp") == "image/webp"
 
 
 def test_validate_reference_image_rejects_bad_type_and_size() -> None:
-    """Unsupported mime / empty / oversize raise clear HomeAssistantError."""
+    """Unrecognized content / empty / oversize raise clear HomeAssistantError."""
     with pytest.raises(HomeAssistantError, match="JPEG, PNG, or WebP"):
-        validate_reference_image_bytes(b"abc", "image/gif")
+        validate_reference_image_bytes(b"GIF89a", "image/gif")
+    with pytest.raises(HomeAssistantError, match="unrecognized"):
+        validate_reference_image_bytes(b"not-an-image", "image/png")
     with pytest.raises(HomeAssistantError, match="empty"):
         validate_reference_image_bytes(b"", "image/png")
-    with pytest.raises(HomeAssistantError, match="50 MB"):
+    with pytest.raises(HomeAssistantError, match="10 MB"):
         validate_reference_image_bytes(
-            b"x" * (IMAGE_EDIT_MAX_BYTES + 1), "image/png"
+            b"\x89PNG\r\n\x1a\n" + b"x" * IMAGE_EDIT_MAX_BYTES, "image/png"
         )
+
+
+def test_stat_and_read_rejects_oversize_before_read(tmp_path, monkeypatch) -> None:
+    """Oversize files fail on ``stat``; ``read_bytes`` is never called."""
+    big = tmp_path / "big.png"
+    # Sparse/truncated file larger than the per-image cap.
+    with big.open("wb") as handle:
+        handle.truncate(IMAGE_EDIT_MAX_BYTES + 1)
+
+    read_calls: list[Path] = []
+
+    def _spy_read(path: Path) -> bytes:
+        read_calls.append(path)
+        return _PNG
+
+    monkeypatch.setattr(
+        "custom_components.grok_conversation._read_path_bytes", _spy_read
+    )
+    with pytest.raises(HomeAssistantError, match="10 MB"):
+        _stat_and_read_path(big)
+    assert read_calls == []
 
 
 def test_build_image_edit_body_single_and_multi() -> None:
     """Single ref → image; multi → images; payload shape matches xAI JSON edits."""
-    one = reference_image_data_uri(b"png-bytes", "image/png")
+    one = reference_image_data_uri(_PNG)
     body = build_image_edit_body(
         {CONF_PROMPT: "sketch this", "n": 2, "response_format": "b64_json"},
         "grok-imagine-image-2.0",
@@ -162,7 +196,7 @@ def test_build_image_edit_body_single_and_multi() -> None:
     assert one["type"] == "image_url"
 
     two = [
-        reference_image_data_uri(b"a", "image/jpeg"),
+        reference_image_data_uri(_JPEG),
         {"url": "https://example.com/b.png", "type": "image_url"},
     ]
     body2 = build_image_edit_body(
@@ -177,7 +211,7 @@ def test_build_image_edit_body_single_and_multi() -> None:
 
 def test_build_image_edit_body_rejects_unsupported_model_and_count() -> None:
     """Unsupported model / too many refs raise before any API call."""
-    ref = reference_image_data_uri(b"x", "image/png")
+    ref = reference_image_data_uri(_PNG)
     with pytest.raises(HomeAssistantError, match="does not support image editing"):
         build_image_edit_body(
             {CONF_PROMPT: "x"}, "grok-imagine-image", [ref]
@@ -621,8 +655,11 @@ async def test_generate_image_reference_path_posts_edits_json(
     tmp_path,
 ) -> None:
     """Local reference path → POST /images/edits with data URI image object."""
-    img = tmp_path / "ref.png"
-    img.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs.add(str(allowed))
+    img = allowed / "ref.png"
+    img.write_bytes(_PNG)
 
     mock_openai_client.images = MagicMock()
     mock_openai_client.images.generate = AsyncMock()
@@ -632,20 +669,19 @@ async def test_generate_image_reference_path_posts_edits_json(
         )
     )
 
-    with patch.object(hass.config, "is_allowed_path", return_value=True):
-        response = await hass.services.async_call(
-            DOMAIN,
-            SERVICE_GENERATE_IMAGE,
-            {
-                "config_entry": mock_config_entry.entry_id,
-                CONF_PROMPT: "pencil sketch",
-                "model": "grok-imagine-image-2.0",
-                "reference_images": [str(img)],
-                "response_format": "b64_json",
-            },
-            blocking=True,
-            return_response=True,
-        )
+    response = await hass.services.async_call(
+        DOMAIN,
+        SERVICE_GENERATE_IMAGE,
+        {
+            "config_entry": mock_config_entry.entry_id,
+            CONF_PROMPT: "pencil sketch",
+            "model": "grok-imagine-image-2.0",
+            "reference_images": [str(img)],
+            "response_format": "b64_json",
+        },
+        blocking=True,
+        return_response=True,
+    )
 
     mock_openai_client.images.generate.assert_not_called()
     mock_openai_client.post.assert_awaited_once()
@@ -705,16 +741,25 @@ async def test_generate_image_reference_rejects_unsupported_model(
     mock_openai_client: MagicMock,
     tmp_path,
 ) -> None:
-    """Default grok-imagine-image rejects reference attachments cleanly."""
-    img = tmp_path / "ref.png"
-    img.write_bytes(b"png")
+    """Default grok-imagine-image rejects refs before any file read."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs.add(str(allowed))
+    img = allowed / "ref.png"
+    img.write_bytes(_PNG)
     mock_openai_client.post = AsyncMock()
     mock_openai_client.images = MagicMock()
     mock_openai_client.images.generate = AsyncMock()
 
     with (
-        patch.object(hass.config, "is_allowed_path", return_value=True),
-        pytest.raises(HomeAssistantError, match="does not support image editing"),
+        patch(
+            "custom_components.grok_conversation._read_path_bytes",
+            side_effect=AssertionError("must not read"),
+        ),
+        pytest.raises(
+            HomeAssistantError,
+            match="grok-imagine-image-2.0 or grok-imagine-image-quality",
+        ),
     ):
         await hass.services.async_call(
             DOMAIN,
@@ -738,19 +783,15 @@ async def test_generate_image_reference_rejects_bad_mime(
     mock_openai_client: MagicMock,
     tmp_path,
 ) -> None:
-    """GIF reference is rejected with a clear HomeAssistantError."""
-    img = tmp_path / "ref.gif"
+    """GIF reference is rejected by magic-byte sniffing."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs.add(str(allowed))
+    img = allowed / "ref.gif"
     img.write_bytes(b"GIF89a")
     mock_openai_client.post = AsyncMock()
 
-    with (
-        patch.object(hass.config, "is_allowed_path", return_value=True),
-        patch(
-            "custom_components.grok_conversation.guess_file_type",
-            return_value=("image/gif", None),
-        ),
-        pytest.raises(HomeAssistantError, match="JPEG, PNG, or WebP"),
-    ):
+    with pytest.raises(HomeAssistantError, match="JPEG, PNG, or WebP"):
         await hass.services.async_call(
             DOMAIN,
             SERVICE_GENERATE_IMAGE,
@@ -764,6 +805,383 @@ async def test_generate_image_reference_rejects_bad_mime(
             return_response=True,
         )
 
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_allowlist_outside_raises_before_read(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """Path outside allowlist raises; file is never read."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs = {str(allowed)}
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(_PNG)
+    mock_openai_client.post = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.grok_conversation._read_path_bytes",
+            side_effect=AssertionError("must not read"),
+        ),
+        pytest.raises(HomeAssistantError, match="not allowed"),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": [str(outside)],
+            },
+            blocking=True,
+            return_response=True,
+        )
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_allowlist_parent_traversal_raises_before_read(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """``allowed/../secret.png`` is rejected before read."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs = {str(allowed)}
+    secret = tmp_path / "secret.png"
+    secret.write_bytes(_PNG)
+    traversal = str(allowed / ".." / "secret.png")
+    mock_openai_client.post = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.grok_conversation._read_path_bytes",
+            side_effect=AssertionError("must not read"),
+        ),
+        pytest.raises(HomeAssistantError, match="not allowed"),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": [traversal],
+            },
+            blocking=True,
+            return_response=True,
+        )
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_allowlist_symlink_outside_raises_before_read(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """Symlink inside allowlist pointing outside is rejected before read."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs = {str(allowed)}
+    outside = tmp_path / "secret.png"
+    outside.write_bytes(_PNG)
+    link = allowed / "link.png"
+    link.symlink_to(outside)
+    mock_openai_client.post = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.grok_conversation._read_path_bytes",
+            side_effect=AssertionError("must not read"),
+        ),
+        pytest.raises(HomeAssistantError, match="not allowed"),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": [str(link)],
+            },
+            blocking=True,
+            return_response=True,
+        )
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_six_refs_raises_before_read(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """More than 5 refs raises before any file read or API call."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs.add(str(allowed))
+    paths = []
+    for i in range(IMAGE_EDIT_MAX_IMAGES + 1):
+        p = allowed / f"r{i}.png"
+        p.write_bytes(_PNG)
+        paths.append(str(p))
+    mock_openai_client.post = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.grok_conversation._read_path_bytes",
+            side_effect=AssertionError("must not read"),
+        ),
+        pytest.raises(HomeAssistantError, match=str(IMAGE_EDIT_MAX_IMAGES)),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": paths,
+            },
+            blocking=True,
+            return_response=True,
+        )
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_oversize_file_never_calls_read_bytes(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+    monkeypatch,
+) -> None:
+    """Oversize allowlisted file is rejected via stat; read_bytes never runs."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs.add(str(allowed))
+    big = allowed / "big.png"
+    with big.open("wb") as handle:
+        handle.truncate(IMAGE_EDIT_MAX_BYTES + 1)
+
+    read_calls: list = []
+
+    def _spy(path):
+        read_calls.append(path)
+        return _PNG
+
+    monkeypatch.setattr(
+        "custom_components.grok_conversation._read_path_bytes", _spy
+    )
+    mock_openai_client.post = AsyncMock()
+
+    with pytest.raises(HomeAssistantError, match="10 MB"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": [str(big)],
+            },
+            blocking=True,
+            return_response=True,
+        )
+    assert read_calls == []
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_media_source_local(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """Local media-source path is read and posted to /images/edits."""
+    img = tmp_path / "media.png"
+    img.write_bytes(_PNG)
+    mock_openai_client.post = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[_image_item(b64_json="bWVkaWE=", mime_type="image/png")]
+        )
+    )
+
+    with patch(
+        "homeassistant.components.media_source.async_resolve_media",
+        return_value=MagicMock(
+            url=None, mime_type="image/png", path=img
+        ),
+    ):
+        response = await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": ["media-source://media/media.png"],
+                "response_format": "b64_json",
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+    body = mock_openai_client.post.await_args.kwargs["body"]
+    assert body["image"]["url"].startswith("data:image/png;base64,")
+    assert response["images"][0]["b64_json"] == "bWVkaWE="
+
+
+async def test_generate_image_media_source_remote_no_path(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """Remote media-source (path None) raises without API call."""
+    mock_openai_client.post = AsyncMock()
+    with (
+        patch(
+            "homeassistant.components.media_source.async_resolve_media",
+            return_value=MagicMock(
+                url="https://cdn.example/remote.png",
+                mime_type="image/png",
+                path=None,
+            ),
+        ),
+        pytest.raises(HomeAssistantError, match="Only local media-source"),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": ["media-source://media/remote.png"],
+            },
+            blocking=True,
+            return_response=True,
+        )
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_camera_admin_allowed(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    hass_admin_user,
+) -> None:
+    """Admin can snapshot a camera entity as a reference image."""
+    from homeassistant.core import Context
+
+    hass.states.async_set("camera.driveway", "idle")
+    mock_openai_client.post = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[_image_item(b64_json="Y2Ft", mime_type="image/jpeg")]
+        )
+    )
+    camera_image = MagicMock(content=_JPEG, content_type="image/jpeg")
+
+    with patch(
+        "homeassistant.components.camera.async_get_image",
+        new_callable=AsyncMock,
+        return_value=camera_image,
+    ) as mock_cam:
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "sketch",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": ["camera.driveway"],
+                "response_format": "b64_json",
+            },
+            blocking=True,
+            return_response=True,
+            context=Context(user_id=hass_admin_user.id),
+        )
+
+    mock_cam.assert_awaited_once()
+    body = mock_openai_client.post.await_args.kwargs["body"]
+    assert body["image"]["url"].startswith("data:image/jpeg;base64,")
+
+
+async def test_generate_image_camera_non_admin_denied(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    hass_read_only_user,
+) -> None:
+    """Non-admin without entity POLICY_READ cannot snapshot a camera."""
+    from homeassistant.core import Context
+    from homeassistant.exceptions import Unauthorized
+
+    hass.states.async_set("camera.driveway", "idle")
+    # Read-only group can typically read all entities in stock HA — force deny.
+    hass_read_only_user.mock_policy({"entities": {"entity_ids": {}}})
+    mock_openai_client.post = AsyncMock()
+
+    with (
+        patch(
+            "homeassistant.components.camera.async_get_image",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("must not snapshot"),
+        ),
+        pytest.raises(Unauthorized),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "sketch",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": ["camera.driveway"],
+            },
+            blocking=True,
+            return_response=True,
+            context=Context(user_id=hass_read_only_user.id),
+        )
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_camera_missing_entity(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """Missing camera entity raises a clear HomeAssistantError."""
+    mock_openai_client.post = AsyncMock()
+    with (
+        patch(
+            "homeassistant.components.camera.async_get_image",
+            new_callable=AsyncMock,
+            side_effect=AssertionError("must not snapshot"),
+        ),
+        pytest.raises(HomeAssistantError, match="not found"),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "sketch",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": ["camera.does_not_exist"],
+            },
+            blocking=True,
+            return_response=True,
+        )
     mock_openai_client.post.assert_not_called()
 
 

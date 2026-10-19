@@ -633,3 +633,89 @@ async def test_generate_image_ha_attachments_getattr_safe(
     result = await entity._async_generate_image(task, _fake_chat_log())
     assert result.image_data == b"ok"
     mock_openai_client.images.generate.assert_awaited_once()
+
+
+async def test_generate_image_six_attachments_raises_before_read(
+    hass: HomeAssistant,
+    mock_openai_client: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """More than 5 AI Task attachments raises before any file read."""
+    from custom_components.grok_conversation.const import IMAGE_EDIT_MAX_IMAGES
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="xAI Grok",
+        data={CONF_API_KEY: "test-key"},
+        options=dict(RECOMMENDED_OPTIONS),
+        version=1,
+        minor_version=3,
+        subentries_data=[
+            {
+                "subentry_type": "ai_task_data",
+                "title": "Grok AI Task",
+                "data": {
+                    **dict(RECOMMENDED_AI_TASK_OPTIONS),
+                    CONF_IMAGE_MODEL: "grok-imagine-image-2.0",
+                },
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.grok_conversation.openai.AsyncOpenAI",
+            return_value=mock_openai_client,
+        ),
+        patch(
+            "custom_components.grok_conversation.async_validate_voice_access",
+            return_value=(True, "ok"),
+        ),
+        patch(
+            "custom_components.grok_conversation.get_async_client",
+            return_value=None,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    entry.runtime_data = mock_openai_client
+
+    registry = er.async_get(hass)
+    entity_id = next(
+        e.entity_id
+        for e in registry.entities.values()
+        if e.domain == "ai_task" and e.config_entry_id == entry.entry_id
+    )
+    entity = _ai_task_entity(hass, entity_id)
+    mock_openai_client.post = AsyncMock()
+
+    attachments = []
+    for i in range(IMAGE_EDIT_MAX_IMAGES + 1):
+        path = tmp_path / f"a{i}.jpg"
+        path.write_bytes(b"\xff\xd8\xff\xd9")
+        attachments.append(
+            conversation.Attachment(
+                media_content_id=f"media-source://media/a{i}.jpg",
+                mime_type="image/jpeg",
+                path=path,
+            )
+        )
+
+    with (
+        patch(
+            "custom_components.grok_conversation._read_path_bytes",
+            side_effect=AssertionError("must not read"),
+        ),
+        pytest.raises(HomeAssistantError, match=str(IMAGE_EDIT_MAX_IMAGES)),
+    ):
+        await entity._async_generate_image(
+            ai_task.GenImageTask(
+                name="Too many",
+                instructions="Edit",
+                attachments=attachments,
+            ),
+            _fake_chat_log(),
+        )
+    mock_openai_client.post.assert_not_called()

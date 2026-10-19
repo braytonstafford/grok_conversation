@@ -145,7 +145,7 @@
         },
         "reference_images": {
           "name": "Reference images",
-          "description": "Optional reference image(s) for editing. Media-source id, local path, camera/image entity, or public URL. Requires grok-imagine-image-2.0 or grok-imagine-image-quality. JPEG/PNG/WebP, max 50 MB, up to 5.",
+          "description": "Optional reference image(s) for editing. Media-source id, local path, camera/image entity, or public URL. Requires grok-imagine-image-2.0 or grok-imagine-image-quality (default grok-imagine-image rejects attachments). JPEG/PNG/WebP, max 10 MB each / 20 MB total, up to 5.",
           "example": "/config/www/reference.png"
         }
       }

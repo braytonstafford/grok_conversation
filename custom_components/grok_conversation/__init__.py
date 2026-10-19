@@ -14,9 +14,11 @@ from openai.types.chat import ChatCompletionMessageParam
 from openai.types.images_response import ImagesResponse
 import voluptuous as vol
 
+from homeassistant.auth.permissions.const import POLICY_READ
 from homeassistant.config_entries import ConfigEntry, ConfigSubentry
 from homeassistant.const import CONF_API_KEY, Platform
 from homeassistant.core import (
+    Context,
     HomeAssistant,
     ServiceCall,
     ServiceResponse,
@@ -26,6 +28,8 @@ from homeassistant.exceptions import (
     ConfigEntryNotReady,
     HomeAssistantError,
     ServiceValidationError,
+    Unauthorized,
+    UnknownUser,
 )
 from homeassistant.helpers import config_validation as cv, selector
 from homeassistant.helpers.aiohttp_client import async_get_clientsession
@@ -57,6 +61,7 @@ from .const import (
     IMAGE_ASPECT_RATIOS,
     IMAGE_EDIT_MAX_BYTES,
     IMAGE_EDIT_MAX_IMAGES,
+    IMAGE_EDIT_MAX_TOTAL_BYTES,
     IMAGE_EDIT_MIME_TYPES,
     IMAGE_EDIT_MODEL_PREFIXES,
     IMAGE_QUALITIES,
@@ -148,6 +153,16 @@ def model_supports_image_edit(model: str | None) -> bool:
     return False
 
 
+def require_edit_capable_model(model: str) -> None:
+    """Raise if ``model`` is not documented for ``/v1/images/edits``."""
+    if not model_supports_image_edit(model):
+        raise HomeAssistantError(
+            f"Model '{model}' does not support image editing with a reference "
+            "image. The default grok-imagine-image is generation-only; use "
+            "grok-imagine-image-2.0 or grok-imagine-image-quality."
+        )
+
+
 def normalize_image_edit_mime(mime_type: str | None) -> str:
     """Normalize a MIME type for image-edit validation."""
     mime = (mime_type or "").partition(";")[0].strip().lower()
@@ -156,28 +171,48 @@ def normalize_image_edit_mime(mime_type: str | None) -> str:
     return mime
 
 
-def validate_reference_image_bytes(data: bytes, mime_type: str | None) -> str:
-    """Validate reference image bytes; return normalized MIME.
+def sniff_image_mime(data: bytes) -> str | None:
+    """Detect JPEG/PNG/WebP from magic bytes; return MIME or None."""
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if len(data) >= 12 and data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "image/webp"
+    return None
 
-    Never logs image bytes. Size ceiling is the documented Files API 50 MB
-    max (edits accept the same JPEG/PNG/WebP payloads via data URI or
-    ``file_id``).
+
+def validate_reference_image_bytes(
+    data: bytes, mime_type: str | None = None
+) -> str:
+    """Validate reference image bytes; return sniffed MIME.
+
+    Never logs image bytes. Magic-byte sniff wins over a declared type.
+    Per-image ceiling is ``IMAGE_EDIT_MAX_BYTES`` (10 MB).
     """
-    mime = normalize_image_edit_mime(mime_type)
-    if mime not in IMAGE_EDIT_MIME_TYPES:
-        raise HomeAssistantError(
-            "Reference image must be JPEG, PNG, or WebP "
-            f"(got {mime_type or 'unknown'})"
-        )
     size = len(data)
-    if size == 0:
+    if size == 0:  # empty in-memory payload
         raise HomeAssistantError("Reference image is empty")
     if size > IMAGE_EDIT_MAX_BYTES:
         raise HomeAssistantError(
-            f"Reference image is {size} bytes; xAI limits image inputs to "
-            f"{IMAGE_EDIT_MAX_BYTES} bytes (50 MB)"
+            f"Reference image is {size} bytes; limit is "
+            f"{IMAGE_EDIT_MAX_BYTES} bytes (10 MB)"
         )
-    return mime
+    sniffed = sniff_image_mime(data)
+    if sniffed is None:
+        declared = normalize_image_edit_mime(mime_type)
+        raise HomeAssistantError(
+            "Reference image content is unrecognized "
+            f"(declared {declared or 'unknown'}); must be JPEG, PNG, or WebP"
+        )
+    return sniffed
+
+
+def _stat_file_size(path: Path) -> int:
+    """Return on-disk size; raise if the path is missing."""
+    if not path.exists():
+        raise HomeAssistantError(f"`{path}` does not exist")
+    return path.stat().st_size
 
 
 def _read_path_bytes(path: Path) -> bytes:
@@ -185,7 +220,24 @@ def _read_path_bytes(path: Path) -> bytes:
     return path.read_bytes()
 
 
-def reference_image_data_uri(data: bytes, mime_type: str) -> dict[str, str]:
+def _stat_and_read_path(
+    path: Path, max_bytes: int = IMAGE_EDIT_MAX_BYTES
+) -> bytes:
+    """Stat then read; reject oversize before loading bytes into memory."""
+    size = _stat_file_size(path)
+    if size == 0:  # empty on-disk file
+        raise HomeAssistantError("Reference image file is empty")
+    if size > max_bytes:
+        raise HomeAssistantError(
+            f"Reference image is {size} bytes; limit is "
+            f"{max_bytes} bytes (10 MB)"
+        )
+    return _read_path_bytes(path)
+
+
+def reference_image_data_uri(
+    data: bytes, mime_type: str | None = None
+) -> dict[str, str]:
     """Build an xAI edit ``image`` / ``images[]`` object from raw bytes."""
     mime = validate_reference_image_bytes(data, mime_type)
     encoded = base64.b64encode(data).decode("ascii")
@@ -261,6 +313,38 @@ async def async_generate_or_edit_image(
     return await client.images.generate(**kwargs)
 
 
+async def _async_check_entity_read_permission(
+    hass: HomeAssistant,
+    context: Context | None,
+    entity_id: str,
+) -> None:
+    """Ensure entity exists and the caller may ``POLICY_READ`` it."""
+    if hass.states.get(entity_id) is None:
+        raise HomeAssistantError(f"Entity `{entity_id}` not found")
+    if context is None or context.user_id is None:
+        return
+    user = await hass.auth.async_get_user(context.user_id)
+    if user is None:
+        raise UnknownUser(context=context)
+    if not user.permissions.check_entity(entity_id, POLICY_READ):
+        raise Unauthorized(
+            context=context,
+            entity_id=entity_id,
+            permission=POLICY_READ,
+        )
+
+
+def _track_total_bytes(total: int, added: int) -> int:
+    """Accumulate reference bytes; raise if aggregate exceeds 20 MB."""
+    new_total = total + added
+    if new_total > IMAGE_EDIT_MAX_TOTAL_BYTES:
+        raise HomeAssistantError(
+            f"Reference images total {new_total} bytes; limit is "
+            f"{IMAGE_EDIT_MAX_TOTAL_BYTES} bytes (20 MB)"
+        )
+    return new_total
+
+
 async def async_reference_images_from_attachments(
     hass: HomeAssistant,
     attachments: list[Any],
@@ -280,10 +364,10 @@ async def async_reference_images_from_attachments(
 
     def _read() -> list[dict[str, str]]:
         images: list[dict[str, str]] = []
+        total = 0
         for path, mime in paths:
-            if not path.exists():
-                raise HomeAssistantError(f"`{path}` does not exist")
-            data = _read_path_bytes(path)
+            data = _stat_and_read_path(path)
+            total = _track_total_bytes(total, len(data))
             guessed, _ = guess_file_type(str(path))
             images.append(reference_image_data_uri(data, mime or guessed))
         return images
@@ -294,6 +378,8 @@ async def async_reference_images_from_attachments(
 async def async_resolve_reference_images(
     hass: HomeAssistant,
     references: list[str],
+    *,
+    context: Context | None = None,
 ) -> list[dict[str, str]]:
     """Resolve service ``reference_images`` to xAI edit image objects.
 
@@ -309,6 +395,7 @@ async def async_resolve_reference_images(
         return []
 
     resolved: list[dict[str, str]] = []
+    total = 0
     for ref in refs:
         if ref.startswith(("http://", "https://")):
             # Public URL — documented by xAI; no local size/mime check.
@@ -325,7 +412,8 @@ async def async_resolve_reference_images(
                     "for image edits"
                 )
             path = Path(media.path)
-            data = await hass.async_add_executor_job(_read_path_bytes, path)
+            data = await hass.async_add_executor_job(_stat_and_read_path, path)
+            total = _track_total_bytes(total, len(data))
             guessed, _ = guess_file_type(str(path))
             resolved.append(
                 reference_image_data_uri(
@@ -340,8 +428,10 @@ async def async_resolve_reference_images(
         ):
             from homeassistant.components import camera, image as image_comp
 
+            await _async_check_entity_read_permission(hass, context, ref)
             integration = camera if domain == "camera" else image_comp
             image_data = await integration.async_get_image(hass, ref)
+            total = _track_total_bytes(total, len(image_data.content))
             resolved.append(
                 reference_image_data_uri(
                     image_data.content, image_data.content_type
@@ -349,13 +439,17 @@ async def async_resolve_reference_images(
             )
             continue
 
-        if not hass.config.is_allowed_path(ref):
+        allowed = await hass.async_add_executor_job(
+            hass.config.is_allowed_path, ref
+        )
+        if not allowed:
             raise HomeAssistantError(
                 f"Path `{ref}` is not allowed "
                 "(add it to allowlist_external_dirs)"
             )
         path = Path(ref)
-        data = await hass.async_add_executor_job(_read_path_bytes, path)
+        data = await hass.async_add_executor_job(_stat_and_read_path, path)
+        total = _track_total_bytes(total, len(data))
         guessed, _ = guess_file_type(str(path))
         resolved.append(reference_image_data_uri(data, guessed))
 
@@ -580,8 +674,11 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
         raw_refs = call_data.pop("reference_images", None) or []
         if isinstance(raw_refs, str):
             raw_refs = [raw_refs]
+        refs_list = list(raw_refs)
+        if refs_list:
+            require_edit_capable_model(model)
         reference_images = await async_resolve_reference_images(
-            hass, list(raw_refs)
+            hass, refs_list, context=call.context
         )
 
         try:
