@@ -43,7 +43,6 @@ from .const import (
     RECOMMENDED_CHAT_MODEL,
     RECOMMENDED_FALLBACK_MODEL,
     RECOMMENDED_MAX_TOKENS,
-    RECOMMENDED_REASONING_EFFORT,
     RECOMMENDED_TEMPERATURE,
     RECOMMENDED_TOP_P,
     RECOMMENDED_VISION_MODEL,
@@ -892,9 +891,9 @@ class GrokBaseLLMEntity(Entity):
                     ),
                     tools=use_tools,
                     tool_choice="auto" if use_tools else None,
-                    reasoning_effort=options.get(
-                        CONF_REASONING_EFFORT, RECOMMENDED_REASONING_EFFORT
-                    ),
+                    # Unset / missing => omit (provider default). Only an
+                    # explicit stored Low/Medium/High is sent (#42 / #44).
+                    reasoning_effort=options.get(CONF_REASONING_EFFORT),
                     user=chat_log.conversation_id,
                     response_format=use_response_format,
                 )

@@ -240,10 +240,70 @@ def extract_usage(response: Any) -> tuple[int, int]:
     return int(prompt or 0), int(completion or 0)
 
 
+# Families documented to accept reasoning_effort (Chat Completions) or
+# reasoning.effort (Responses). Keep extendable when new families ship.
+#
+# Sources (checked for #42 / PR #44 review):
+# - https://docs.x.ai/developers/model-capabilities/text/reasoning
+#   documents effort for grok-4.5 / 4.6 / 4.7 and grok-4.20-multi-agent
+#   (agent-count semantics for multi-agent)
+# - https://docs.x.ai/developers/models/grok-4.3
+#   (efforts: none/low/medium/high/xhigh; alias grok-4.3-latest)
+# - https://docs.x.ai/developers/models/grok-4.5
+#   (alias grok-4.5-latest, grok-build-latest)
+# - https://docs.x.ai/developers/models/grok-4.6
+# - https://docs.x.ai/developers/models/grok-4.7
+#
+# Conservative omit (Reasoning: Yes but no documented effort list, or
+# undocumented): grok-4.20-*-reasoning, grok-build-0.1, bare grok-4 / grok-3*,
+# retired *-fast-reasoning ids, and unknown future ids until listed here.
+# ``*-non-reasoning*`` always excluded (xAI 400).
+#
+# Prefix match is exact or ``prefix-`` (not bare startswith) so ``grok-4.30``
+# does not match ``grok-4.3``.
+_REASONING_EFFORT_ID_PREFIXES: tuple[str, ...] = (
+    "grok-4.3",
+    "grok-4.5",
+    "grok-4.6",
+    "grok-4.7",
+    "grok-build-latest",
+)
+
+
 def _supports_reasoning_effort(model: str) -> bool:
-    """True for reasoning model ids; "non-reasoning" ids reject reasoning effort."""
-    name = (model or "").lower()
-    return "reasoning" in name and "non-reasoning" not in name
+    """True when the model id is documented to accept a reasoning effort param.
+
+    Allow-listed families and ``*multi-agent*`` ids return True.
+    ``*-non-reasoning*`` and everything else (including ``*-reasoning`` tags
+    without a documented effort list) return False.
+    """
+    name = (model or "").strip().lower()
+    if not name:
+        return False
+    if "non-reasoning" in name:
+        return False
+    # Multi-agent: reasoning.effort selects agent count (documented).
+    if "multi-agent" in name:
+        return True
+    for prefix in _REASONING_EFFORT_ID_PREFIXES:
+        if name == prefix or name.startswith(f"{prefix}-"):
+            return True
+    return False
+
+
+def _should_send_reasoning_effort(model: str, reasoning_effort: str | None) -> bool:
+    """True when an explicit effort should be attached to the request.
+
+    Provider default is represented by unset / ``none`` (any case) and is
+    never sent. Only low/medium/high (etc.) on a supported model are sent.
+    """
+    if reasoning_effort is None:
+        return False
+    effort = str(reasoning_effort).strip().lower()
+    if not effort or effort == "none":
+        return False
+    return _supports_reasoning_effort(model)
+
 
 
 async def async_chat_completion(
@@ -279,12 +339,8 @@ async def async_chat_completion(
         args["tool_choice"] = tool_choice or "auto"
     if response_format is not None:
         args["response_format"] = response_format
-    if (
-        reasoning_effort
-        and reasoning_effort != "none"
-        and _supports_reasoning_effort(model)
-    ):
-        args["reasoning_effort"] = reasoning_effort
+    if _should_send_reasoning_effort(model, reasoning_effort):
+        args["reasoning_effort"] = str(reasoning_effort).strip().lower()
     LOGGER.debug(
         "chat.completions.create model=%s tools=%s response_format=%s",
         model,
@@ -344,12 +400,10 @@ async def async_responses_completion(
         args["top_p"] = top_p
     if tools:
         args["tools"] = tools
-    if (
-        reasoning_effort
-        and reasoning_effort != "none"
-        and _supports_reasoning_effort(model)
-    ):
-        args["reasoning"] = {"effort": reasoning_effort}
+    if _should_send_reasoning_effort(model, reasoning_effort):
+        args["reasoning"] = {
+            "effort": str(reasoning_effort).strip().lower(),
+        }
 
     LOGGER.debug(
         "responses.create model=%s live_search=%s tools=%s",
