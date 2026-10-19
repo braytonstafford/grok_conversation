@@ -2,19 +2,27 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import voluptuous as vol
+import yaml
 from homeassistant.config_entries import SOURCE_USER
 from homeassistant.const import CONF_API_KEY, CONF_NAME
 from homeassistant.core import HomeAssistant
 from homeassistant.data_entry_flow import FlowResultType
+from homeassistant.helpers.selector import SelectSelector
 from homeassistant.setup import async_setup_component
 from pytest_homeassistant_custom_component.common import MockConfigEntry
 
-from custom_components.grok_conversation.config_flow import RECOMMENDED_OPTIONS
+from custom_components.grok_conversation.config_flow import (
+    RECOMMENDED_OPTIONS,
+    openai_config_option_schema,
+)
 from custom_components.grok_conversation.const import (
     CONF_CHAT_MODEL,
     CONF_IMAGE_MODEL,
+    CONF_REASONING_EFFORT,
     CONF_RECOMMENDED,
     DOMAIN,
     RECOMMENDED_AI_TASK_OPTIONS,
@@ -155,3 +163,50 @@ async def test_ai_task_subentry_create_and_reconfigure(
     assert result["type"] in (FlowResultType.ABORT, FlowResultType.CREATE_ENTRY)
     updated = mock_config_entry.subentries[subentry.subentry_id]
     assert updated.data[CONF_CHAT_MODEL] == "grok-4.5"
+
+
+async def test_reasoning_effort_provider_default_in_options_schema(
+    hass: HomeAssistant,
+) -> None:
+    """Advanced options expose none (provider default) and it round-trips (#40 review)."""
+    assert await async_setup_component(hass, "homeassistant", {})
+    await hass.async_block_till_done()
+
+    options = {**RECOMMENDED_OPTIONS, CONF_RECOMMENDED: False}
+    schema_dict = openai_config_option_schema(hass, options)
+
+    effort_key = next(
+        key
+        for key in schema_dict
+        if getattr(key, "schema", key) == CONF_REASONING_EFFORT
+    )
+    selector = schema_dict[effort_key]
+    assert isinstance(selector, SelectSelector)
+    effort_values = [opt["value"] for opt in selector.config["options"]]
+    effort_labels = [opt["label"] for opt in selector.config["options"]]
+    assert "none" in effort_values
+    assert "Provider default (not sent)" in effort_labels
+
+    validated = vol.Schema(schema_dict)(
+        {
+            CONF_RECOMMENDED: False,
+            CONF_REASONING_EFFORT: "none",
+        }
+    )
+    assert validated[CONF_REASONING_EFFORT] == "none"
+
+    services = yaml.safe_load(
+        (
+            Path(__file__).resolve().parents[1]
+            / "custom_components"
+            / "grok_conversation"
+            / "services.yaml"
+        ).read_text(encoding="utf-8")
+    )
+    ask_opts = services["ask"]["fields"]["reasoning_effort"]["selector"]["select"][
+        "options"
+    ]
+    ask_values = [
+        opt["value"] if isinstance(opt, dict) else opt for opt in ask_opts
+    ]
+    assert "none" in ask_values

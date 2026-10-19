@@ -183,7 +183,7 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 
 ## Version
 
-**1.10.2** — Do not send `reasoning_effort` / `reasoning.effort` to `-non-reasoning` model ids (fixes silent fallback after xAI 400). Options UI adds Off (`none`) for reasoning effort.
+**1.10.2** — Do not send `reasoning_effort` / `reasoning.effort` to `-non-reasoning` model ids (fixes silent fallback after xAI 400). Options UI adds Provider default (not sent) (`none`) for reasoning effort (omits the param; does not disable reasoning).
 
 **1.10.1** — Require `openai>=2.45.0,<4` (HA core 2.x / 3.x); ToolResult-compatible tool seeds with dict fallback for HA before 2026.10.
 
