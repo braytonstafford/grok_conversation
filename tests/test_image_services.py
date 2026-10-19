@@ -1022,6 +1022,90 @@ async def test_generate_image_oversize_file_never_calls_read_bytes(
     mock_openai_client.post.assert_not_called()
 
 
+async def test_generate_image_total_cap_three_8mb_refs_never_calls_client(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """Three 8 MB refs exceed the 20 MB aggregate; xAI client is never called."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs.add(str(allowed))
+    eight_mb = 8 * 1024 * 1024
+    assert eight_mb < IMAGE_EDIT_MAX_BYTES
+    assert 3 * eight_mb > IMAGE_EDIT_MAX_TOTAL_BYTES
+    paths: list[str] = []
+    for i in range(3):
+        img = allowed / f"ref{i}.png"
+        with img.open("wb") as handle:
+            handle.write(_PNG)
+            handle.truncate(eight_mb)
+        paths.append(str(img))
+    mock_openai_client.post = AsyncMock()
+    mock_openai_client.images = MagicMock()
+    mock_openai_client.images.generate = AsyncMock()
+
+    with pytest.raises(HomeAssistantError, match="20 MB"):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": paths,
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+    mock_openai_client.post.assert_not_called()
+    mock_openai_client.images.generate.assert_not_called()
+
+
+async def test_generate_image_allowlist_uses_executor(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """``is_allowed_path`` must run via ``async_add_executor_job`` (blocking I/O)."""
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs.add(str(allowed))
+    img = allowed / "ref.png"
+    img.write_bytes(_PNG)
+    mock_openai_client.post = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[_image_item(b64_json="b3V0", mime_type="image/png")]
+        )
+    )
+
+    original = hass.async_add_executor_job
+    executor_targets: list = []
+
+    async def _spy(target, *args, **kwargs):
+        executor_targets.append(target)
+        return await original(target, *args, **kwargs)
+
+    with patch.object(hass, "async_add_executor_job", side_effect=_spy):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": [str(img)],
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+    assert hass.config.is_allowed_path in executor_targets
+
+
 async def test_generate_image_media_source_local(
     hass: HomeAssistant,
     mock_config_entry: MockConfigEntry,

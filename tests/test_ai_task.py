@@ -580,13 +580,19 @@ async def test_generate_image_attachment_unsupported_model(
     ai_task_entity_id: str,
     tmp_path: Path,
 ) -> None:
-    """Default image model rejects edit attachments with HomeAssistantError."""
+    """Default image model rejects edit attachments before any file read."""
     entity = _ai_task_entity(hass, ai_task_entity_id)
     image_path = tmp_path / "driveway.jpg"
     image_path.write_bytes(b"\xff\xd8\xff\xd9")
     mock_openai_client.post = AsyncMock()
 
-    with pytest.raises(HomeAssistantError, match="does not support image editing"):
+    with (
+        patch(
+            "custom_components.grok_conversation._stat_and_read_path",
+            side_effect=AssertionError("must not read attachment"),
+        ) as mock_stat,
+        pytest.raises(HomeAssistantError, match="does not support image editing"),
+    ):
         await entity._async_generate_image(
             ai_task.GenImageTask(
                 name="Sketch",
@@ -602,6 +608,7 @@ async def test_generate_image_attachment_unsupported_model(
             _fake_chat_log(),
         )
 
+    mock_stat.assert_not_called()
     mock_openai_client.post.assert_not_called()
 
 

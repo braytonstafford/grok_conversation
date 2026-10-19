@@ -345,6 +345,11 @@ def _track_total_bytes(total: int, added: int) -> int:
     return new_total
 
 
+def _resolve_local_reference_path(ref: str) -> Path:
+    """Resolve a local reference path for allowlist check and subsequent read."""
+    return Path(ref).expanduser().resolve()
+
+
 async def async_reference_images_from_attachments(
     hass: HomeAssistant,
     attachments: list[Any],
@@ -439,15 +444,19 @@ async def async_resolve_reference_images(
             )
             continue
 
+        # Resolve once in the executor, allowlist-check that path, then read
+        # the same resolved path (avoids symlink TOCTOU between check and read).
+        path = await hass.async_add_executor_job(
+            _resolve_local_reference_path, ref
+        )
         allowed = await hass.async_add_executor_job(
-            hass.config.is_allowed_path, ref
+            hass.config.is_allowed_path, str(path)
         )
         if not allowed:
             raise HomeAssistantError(
                 f"Path `{ref}` is not allowed "
                 "(add it to allowlist_external_dirs)"
             )
-        path = Path(ref)
         data = await hass.async_add_executor_job(_stat_and_read_path, path)
         total = _track_total_bytes(total, len(data))
         guessed, _ = guess_file_type(str(path))
