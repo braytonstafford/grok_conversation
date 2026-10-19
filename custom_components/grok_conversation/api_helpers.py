@@ -240,6 +240,12 @@ def extract_usage(response: Any) -> tuple[int, int]:
     return int(prompt or 0), int(completion or 0)
 
 
+def _supports_reasoning_effort(model: str) -> bool:
+    """True for reasoning model ids; "non-reasoning" ids reject reasoning effort."""
+    name = (model or "").lower()
+    return "reasoning" in name and "non-reasoning" not in name
+
+
 async def async_chat_completion(
     client: openai.AsyncClient,
     *,
@@ -276,7 +282,7 @@ async def async_chat_completion(
     if (
         reasoning_effort
         and reasoning_effort != "none"
-        and "reasoning" in model.lower()
+        and _supports_reasoning_effort(model)
     ):
         args["reasoning_effort"] = reasoning_effort
     LOGGER.debug(
@@ -341,7 +347,7 @@ async def async_responses_completion(
     if (
         reasoning_effort
         and reasoning_effort != "none"
-        and "reasoning" in model.lower()
+        and _supports_reasoning_effort(model)
     ):
         args["reasoning"] = {"effort": reasoning_effort}
 

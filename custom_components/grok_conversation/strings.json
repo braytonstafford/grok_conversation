@@ -82,7 +82,7 @@
         },
         "data_description": {
           "prompt": "Instruct how the LLM should respond. This can be a template.",
-          "reasoning_effort": "Controls reasoning effort for Grok reasoning models (low/medium/high).",
+          "reasoning_effort": "Controls reasoning effort for Grok reasoning models (provider default / low / medium / high). Provider default omits the parameter so xAI applies its own default (often high); it does not disable reasoning.",
           "live_search": "Enable xAI server-side Web and/or X search. Works with Assist tools (two-pass: search brief → tool loop).",
           "interaction_mode": "tools = direct HA tool calling; pipeline = try HA Assist first; chat_only = no device control.",
           "location_context": "e.g. Calgary, Alberta, Canada — always sent to live search for 'near me' / local queries.",

@@ -219,13 +219,19 @@ ask:
           step: 0.05
     reasoning_effort:
       name: "Reasoning effort"
+      description: "low/medium/high, or Provider default (not sent). Omitting the parameter lets xAI apply its own default."
       required: false
       selector:
         select:
           options:
-            - "low"
-            - "medium"
-            - "high"
+            - label: "Provider default (not sent)"
+              value: "none"
+            - label: "Low"
+              value: "low"
+            - label: "Medium"
+              value: "medium"
+            - label: "High"
+              value: "high"
     live_search:
       name: "Live Search"
       required: false
