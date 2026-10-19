@@ -727,6 +727,7 @@ def openai_config_option_schema(
             ): SelectSelector(
                 SelectSelectorConfig(
                     options=[
+                        SelectOptionDict(value="none", label="Off"),
                         SelectOptionDict(value="low", label="Low"),
                         SelectOptionDict(value="medium", label="Medium"),
                         SelectOptionDict(value="high", label="High"),

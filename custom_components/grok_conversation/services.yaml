@@ -223,6 +223,7 @@ ask:
       selector:
         select:
           options:
+            - "none"
             - "low"
             - "medium"
             - "high"
