@@ -1,7 +1,8 @@
 # Minimum supported HA (hacs.json: 2026.7.0) — PHACC 0.13.344.
-# openai 2.45.0 satisfies manifest openai>=2.45.0,<4 and exercises the
-# pre-ToolResult code path (ToolResult arrived in HA 2026.10).
-openai==2.45.0
+# openai 2.21.0 matches HA 2026.7.0 package_constraints / openai_conversation
+# and satisfies manifest openai>=2.21.0,<4. Exercises the pre-ToolResult
+# code path (ToolResult arrived in HA 2026.10).
+openai==2.21.0
 voluptuous-openapi
 pytest-homeassistant-custom-component==0.13.344
 # Keep extras aligned with HA 2026.7 package_constraints where pinned.
