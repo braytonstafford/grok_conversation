@@ -143,7 +143,9 @@ RECOMMENDED_AI_TASK_OPTIONS = {
 }
 
 RECOMMENDED_MAX_TOKENS = 600
-RECOMMENDED_REASONING_EFFORT = "low"
+# "none" = provider default (parameter omitted). Matches the options UI label
+# "Provider default (not sent)". Unset entry options also omit the parameter.
+RECOMMENDED_REASONING_EFFORT = "none"
 RECOMMENDED_TEMPERATURE = 1.0
 RECOMMENDED_TOP_P = 1.0
 RECOMMENDED_LIVE_SEARCH = "off"

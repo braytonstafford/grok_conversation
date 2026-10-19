@@ -186,6 +186,8 @@ async def test_reasoning_effort_provider_default_in_options_schema(
     effort_labels = [opt["label"] for opt in selector.config["options"]]
     assert "none" in effort_values
     assert "Provider default (not sent)" in effort_labels
+    # Schema default for unset advanced options is provider default (#44).
+    assert effort_key.default() == "none"
 
     validated = vol.Schema(schema_dict)(
         {
