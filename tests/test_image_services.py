@@ -178,6 +178,27 @@ def test_stat_and_read_rejects_oversize_before_read(tmp_path, monkeypatch) -> No
     assert read_calls == []
 
 
+def test_stat_and_read_rejects_empty_on_disk_before_read(
+    tmp_path, monkeypatch
+) -> None:
+    """Empty on-disk files fail on ``stat`` size; ``read_bytes`` is never called."""
+    empty = tmp_path / "empty.png"
+    empty.write_bytes(b"")
+
+    read_calls: list[Path] = []
+
+    def _spy_read(path: Path) -> bytes:
+        read_calls.append(path)
+        return b""
+
+    monkeypatch.setattr(
+        "custom_components.grok_conversation._read_path_bytes", _spy_read
+    )
+    with pytest.raises(HomeAssistantError, match="empty"):
+        _stat_and_read_path(empty)
+    assert read_calls == []
+
+
 def test_build_image_edit_body_single_and_multi() -> None:
     """Single ref → image; multi → images; payload shape matches xAI JSON edits."""
     one = reference_image_data_uri(_PNG)
