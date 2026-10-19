@@ -1,4 +1,4 @@
-# Latest CI leg: pin to HA core's current openai; manifest allows >=2.45.0,<4.
+# Latest CI leg: pin to HA core's current openai; manifest allows >=2.21.0,<4.
 openai==3.10.0
 voluptuous-openapi
 # Pin a recent PHACC that includes Home Assistant 2026.7+ (ai_task + subentries).
