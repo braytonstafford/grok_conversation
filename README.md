@@ -207,6 +207,8 @@ CI: Hassfest + HACS validation + pytest on push/PR/nightly.
 
 ## Version
 
+**1.11.1** — Test coverage for in-allowlist symlink reference paths: assert `_stat_and_read_path` (and the allowlist check) receive the resolved target path, not `Path(ref)` (#47). No behavior change.
+
 **1.11.0** — Image generation reference attachments (#45): `ai_task.generate_image` enabled; optional `reference_images` on `grok_conversation.generate_image` and HA media attachments on `ai_task.generate_image` call xAI `POST /v1/images/edits` (JSON `image`/`images` with data URI or public URL — not OpenAI multipart). Edit-capable models: `grok-imagine-image-2.0` / `grok-imagine-image-quality` (default `grok-imagine-image` rejects refs — set the AI Task image model or service `model`). Validates JPEG/PNG/WebP via magic bytes; 10 MB/image and 20 MB aggregate (stat before read); camera/image refs require `POLICY_READ`; paths use allowlist via executor. Text-only generation unchanged when no reference is given.
 
 **1.10.4** — Send `reasoning_effort` / `reasoning.effort` only for documented families (`grok-4.3` / `4.5` / `4.6` / `4.7`, `grok-build-latest`, `*multi-agent*`) via an explicit allow-list (#42). `*-non-reasoning*`, `grok-4.20*-reasoning`, and unknown ids omit the parameter (conservative). Unset / recommended effort is provider default (not sent) on both the main chat and live-search passes — only an explicit Low/Medium/High is sent. Entries that already store Low/Medium/High (including the old UI default Low) now have it sent to the allow-listed models (4.3/4.5/4.6/4.7, multi-agent); set Provider default (not sent) to omit. A stored value on `grok-4.20*-reasoning` is no longer sent.

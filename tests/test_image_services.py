@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from contextlib import ExitStack, contextmanager
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -938,6 +939,73 @@ async def test_generate_image_allowlist_symlink_outside_raises_before_read(
             return_response=True,
         )
     mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_allowlist_symlink_inside_uses_resolved_path(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    tmp_path,
+) -> None:
+    """In-allowlist symlink → ``_stat_and_read_path`` gets the resolved target.
+
+    Kills the Path(ref) mutants for the allowlist check (stat) and the read:
+    both must use the resolved path, not the original symlink ``Path(ref)``.
+    """
+    allowed = tmp_path / "allowed"
+    allowed.mkdir()
+    hass.config.allowlist_external_dirs = {str(allowed)}
+    target = allowed / "real.png"
+    target.write_bytes(_PNG)
+    link = allowed / "link.png"
+    link.symlink_to(target.resolve())
+    ref = str(link)
+    resolved = Path(ref).expanduser().resolve()
+    assert resolved == target.resolve()
+    assert Path(ref) != resolved
+
+    mock_openai_client.post = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[_image_item(b64_json="b3V0", mime_type="image/png")]
+        )
+    )
+
+    stat_read_paths: list[Path] = []
+    allowlist_args: list[str] = []
+    real_stat_and_read = _stat_and_read_path
+    real_is_allowed = hass.config.is_allowed_path
+
+    def _stat_spy(path: Path, max_bytes: int = IMAGE_EDIT_MAX_BYTES) -> bytes:
+        stat_read_paths.append(path)
+        return real_stat_and_read(path, max_bytes)
+
+    def _allowlist_spy(path: str) -> bool:
+        allowlist_args.append(path)
+        return real_is_allowed(path)
+
+    with (
+        patch(
+            "custom_components.grok_conversation._stat_and_read_path",
+            side_effect=_stat_spy,
+        ),
+        patch.object(hass.config, "is_allowed_path", side_effect=_allowlist_spy),
+    ):
+        await hass.services.async_call(
+            DOMAIN,
+            SERVICE_GENERATE_IMAGE,
+            {
+                "config_entry": mock_config_entry.entry_id,
+                CONF_PROMPT: "edit",
+                "model": "grok-imagine-image-2.0",
+                "reference_images": [ref],
+            },
+            blocking=True,
+            return_response=True,
+        )
+
+    assert stat_read_paths == [resolved]
+    assert allowlist_args == [str(resolved)]
+    mock_openai_client.post.assert_awaited_once()
 
 
 async def test_generate_image_six_refs_raises_before_read(
