@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import base64
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 import voluptuous as vol
-from homeassistant.components import ai_task
+from homeassistant.components import ai_task, conversation
 from homeassistant.const import CONF_API_KEY
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
@@ -22,6 +24,7 @@ except ImportError:  # pragma: no cover
 
 from custom_components.grok_conversation.config_flow import RECOMMENDED_OPTIONS
 from custom_components.grok_conversation.const import (
+    CONF_IMAGE_MODEL,
     DOMAIN,
     RECOMMENDED_AI_TASK_OPTIONS,
     RECOMMENDED_CHAT_MODEL,
@@ -389,3 +392,337 @@ async def test_generate_data_api_error(
             entity_id=ai_task_entity_id,
             instructions="Anything",
         )
+
+
+def _ai_task_entity(hass: HomeAssistant, entity_id: str):
+    """Return the AI Task entity instance."""
+    from homeassistant.components.ai_task.const import DATA_COMPONENT
+
+    entity = hass.data[DATA_COMPONENT].get_entity(entity_id)
+    assert entity is not None
+    return entity
+
+
+def _ai_task_features(hass: HomeAssistant, entity_id: str):
+    """Return supported features for the AI Task entity."""
+    return _ai_task_entity(hass, entity_id).supported_features
+
+
+async def test_ai_task_entity_supports_generate_image(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    ai_task_entity_id: str,
+) -> None:
+    """AI Task entity advertises GENERATE_IMAGE + SUPPORT_ATTACHMENTS."""
+    features = _ai_task_features(hass, ai_task_entity_id)
+    generate_image = getattr(ai_task.AITaskEntityFeature, "GENERATE_IMAGE", None)
+    support_attachments = getattr(
+        ai_task.AITaskEntityFeature, "SUPPORT_ATTACHMENTS", None
+    )
+    assert generate_image is not None
+    assert support_attachments is not None
+    assert generate_image in features
+    assert support_attachments in features
+    assert ai_task.AITaskEntityFeature.GENERATE_DATA in features
+
+
+def _fake_chat_log():
+    """Minimal chat log stand-in for direct _async_generate_image calls."""
+    log = MagicMock()
+    log.conversation_id = "conv-test"
+    log.async_add_assistant_content_without_tools = MagicMock()
+    return log
+
+
+async def test_generate_image_text_only(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    ai_task_entity_id: str,
+) -> None:
+    """ai_task.generate_image without attachments uses images.generate."""
+    mock_openai_client.images = MagicMock()
+    mock_openai_client.images.generate = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    b64_json=base64.b64encode(b"img-bytes").decode(),
+                    url=None,
+                    mime_type="image/png",
+                    revised_prompt=None,
+                )
+            ]
+        )
+    )
+    mock_openai_client.post = AsyncMock()
+
+    entity = _ai_task_entity(hass, ai_task_entity_id)
+    result = await entity._async_generate_image(
+        ai_task.GenImageTask(
+            name="Sky",
+            instructions="A blue sky",
+        ),
+        _fake_chat_log(),
+    )
+
+    mock_openai_client.images.generate.assert_awaited_once()
+    mock_openai_client.post.assert_not_called()
+    kwargs = mock_openai_client.images.generate.await_args.kwargs
+    assert kwargs["prompt"] == "A blue sky"
+    assert kwargs["response_format"] == "b64_json"
+    assert "image" not in kwargs
+    assert result.image_data == b"img-bytes"
+    assert result.mime_type == "image/png"
+
+
+async def test_generate_image_with_attachment_posts_edits(
+    hass: HomeAssistant,
+    mock_openai_client: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """Reference attachment → POST /images/edits with data URI on edit model."""
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="xAI Grok",
+        data={CONF_API_KEY: "test-key"},
+        options=dict(RECOMMENDED_OPTIONS),
+        version=1,
+        minor_version=3,
+        subentries_data=[
+            {
+                "subentry_type": "ai_task_data",
+                "title": "Grok AI Task",
+                "data": {
+                    **dict(RECOMMENDED_AI_TASK_OPTIONS),
+                    CONF_IMAGE_MODEL: "grok-imagine-image-2.0",
+                },
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.grok_conversation.openai.AsyncOpenAI",
+            return_value=mock_openai_client,
+        ),
+        patch(
+            "custom_components.grok_conversation.async_validate_voice_access",
+            return_value=(True, "ok"),
+        ),
+        patch(
+            "custom_components.grok_conversation.get_async_client",
+            return_value=None,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    entry.runtime_data = mock_openai_client
+
+    registry = er.async_get(hass)
+    entities = [
+        e
+        for e in registry.entities.values()
+        if e.domain == "ai_task" and e.config_entry_id == entry.entry_id
+    ]
+    entity_id = entities[0].entity_id
+    entity = _ai_task_entity(hass, entity_id)
+
+    image_path = tmp_path / "driveway.jpg"
+    image_path.write_bytes(b"\xff\xd8\xff\xd9")
+
+    mock_openai_client.images = MagicMock()
+    mock_openai_client.images.generate = AsyncMock()
+    mock_openai_client.post = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    b64_json=base64.b64encode(b"edited").decode(),
+                    url=None,
+                    mime_type="image/jpeg",
+                    revised_prompt="sketch of driveway",
+                )
+            ]
+        )
+    )
+
+    attachment = conversation.Attachment(
+        media_content_id="media-source://media/driveway.jpg",
+        mime_type="image/jpeg",
+        path=image_path,
+    )
+    result = await entity._async_generate_image(
+        ai_task.GenImageTask(
+            name="Sketch",
+            instructions="Render as pencil sketch",
+            attachments=[attachment],
+        ),
+        _fake_chat_log(),
+    )
+
+    mock_openai_client.images.generate.assert_not_called()
+    mock_openai_client.post.assert_awaited_once()
+    assert mock_openai_client.post.await_args.args[0] == "/images/edits"
+    body = mock_openai_client.post.await_args.kwargs["body"]
+    assert body["model"] == "grok-imagine-image-2.0"
+    assert body["prompt"] == "Render as pencil sketch"
+    assert body["image"]["type"] == "image_url"
+    assert body["image"]["url"].startswith("data:image/jpeg;base64,")
+    assert result.image_data == b"edited"
+    assert result.revised_prompt == "sketch of driveway"
+
+
+async def test_generate_image_attachment_unsupported_model(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    ai_task_entity_id: str,
+    tmp_path: Path,
+) -> None:
+    """Default image model rejects edit attachments before any file read."""
+    entity = _ai_task_entity(hass, ai_task_entity_id)
+    image_path = tmp_path / "driveway.jpg"
+    image_path.write_bytes(b"\xff\xd8\xff\xd9")
+    mock_openai_client.post = AsyncMock()
+
+    with (
+        patch(
+            "custom_components.grok_conversation._stat_and_read_path",
+            side_effect=AssertionError("must not read attachment"),
+        ) as mock_stat,
+        pytest.raises(HomeAssistantError, match="does not support image editing"),
+    ):
+        await entity._async_generate_image(
+            ai_task.GenImageTask(
+                name="Sketch",
+                instructions="Edit",
+                attachments=[
+                    conversation.Attachment(
+                        media_content_id="media-source://media/driveway.jpg",
+                        mime_type="image/jpeg",
+                        path=image_path,
+                    )
+                ],
+            ),
+            _fake_chat_log(),
+        )
+
+    mock_stat.assert_not_called()
+    mock_openai_client.post.assert_not_called()
+
+
+async def test_generate_image_ha_attachments_getattr_safe(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    ai_task_entity_id: str,
+) -> None:
+    """GenImageTask without attachments attr (older shape) still generates."""
+    entity = _ai_task_entity(hass, ai_task_entity_id)
+    mock_openai_client.images = MagicMock()
+    mock_openai_client.images.generate = AsyncMock(
+        return_value=SimpleNamespace(
+            data=[
+                SimpleNamespace(
+                    b64_json=base64.b64encode(b"ok").decode(),
+                    url=None,
+                    mime_type="image/png",
+                    revised_prompt=None,
+                )
+            ]
+        )
+    )
+    # Simulate a task object that may lack attachments on older HA shapes.
+    task = SimpleNamespace(name="Sky", instructions="Blue sky")
+    assert getattr(task, "attachments", None) is None
+
+    result = await entity._async_generate_image(task, _fake_chat_log())
+    assert result.image_data == b"ok"
+    mock_openai_client.images.generate.assert_awaited_once()
+
+
+async def test_generate_image_six_attachments_raises_before_read(
+    hass: HomeAssistant,
+    mock_openai_client: MagicMock,
+    tmp_path: Path,
+) -> None:
+    """More than 5 AI Task attachments raises before any file read."""
+    from custom_components.grok_conversation.const import IMAGE_EDIT_MAX_IMAGES
+
+    entry = MockConfigEntry(
+        domain=DOMAIN,
+        title="xAI Grok",
+        data={CONF_API_KEY: "test-key"},
+        options=dict(RECOMMENDED_OPTIONS),
+        version=1,
+        minor_version=3,
+        subentries_data=[
+            {
+                "subentry_type": "ai_task_data",
+                "title": "Grok AI Task",
+                "data": {
+                    **dict(RECOMMENDED_AI_TASK_OPTIONS),
+                    CONF_IMAGE_MODEL: "grok-imagine-image-2.0",
+                },
+                "unique_id": None,
+            }
+        ],
+    )
+    entry.add_to_hass(hass)
+
+    with (
+        patch(
+            "custom_components.grok_conversation.openai.AsyncOpenAI",
+            return_value=mock_openai_client,
+        ),
+        patch(
+            "custom_components.grok_conversation.async_validate_voice_access",
+            return_value=(True, "ok"),
+        ),
+        patch(
+            "custom_components.grok_conversation.get_async_client",
+            return_value=None,
+        ),
+    ):
+        assert await hass.config_entries.async_setup(entry.entry_id)
+        await hass.async_block_till_done()
+    entry.runtime_data = mock_openai_client
+
+    registry = er.async_get(hass)
+    entity_id = next(
+        e.entity_id
+        for e in registry.entities.values()
+        if e.domain == "ai_task" and e.config_entry_id == entry.entry_id
+    )
+    entity = _ai_task_entity(hass, entity_id)
+    mock_openai_client.post = AsyncMock()
+
+    attachments = []
+    for i in range(IMAGE_EDIT_MAX_IMAGES + 1):
+        path = tmp_path / f"a{i}.jpg"
+        path.write_bytes(b"\xff\xd8\xff\xd9")
+        attachments.append(
+            conversation.Attachment(
+                media_content_id=f"media-source://media/a{i}.jpg",
+                mime_type="image/jpeg",
+                path=path,
+            )
+        )
+
+    with (
+        patch(
+            "custom_components.grok_conversation._read_path_bytes",
+            side_effect=AssertionError("must not read"),
+        ),
+        pytest.raises(HomeAssistantError, match=str(IMAGE_EDIT_MAX_IMAGES)),
+    ):
+        await entity._async_generate_image(
+            ai_task.GenImageTask(
+                name="Too many",
+                instructions="Edit",
+                attachments=attachments,
+            ),
+            _fake_chat_log(),
+        )
+    mock_openai_client.post.assert_not_called()

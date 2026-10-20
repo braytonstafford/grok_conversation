@@ -131,7 +131,7 @@ def effective_model_choice(
         return current
     return recommended
 
-# AI Task subentry defaults (generate_image deferred; image_model kept for schema stability)
+# AI Task subentry defaults (image_model used by ai_task.generate_image)
 DEFAULT_AI_TASK_NAME = "Grok AI Task"
 # Structured / longer AI Task replies need more headroom than Assist (600).
 RECOMMENDED_AI_TASK_MAX_TOKENS = 2500
@@ -193,6 +193,20 @@ IMAGE_QUALITIES = ("low", "medium", "auto", "standard", "hd")
 IMAGE_QUALITY_DOCUMENTED = frozenset({"low", "medium", "auto"})
 IMAGE_STYLES = ("vivid", "natural")  # deprecated; accepted and ignored
 IMAGE_RESPONSE_FORMATS = ("url", "b64_json")
+
+# Image editing (/v1/images/edits) — documented formats (JPEG/PNG/WebP).
+# https://docs.x.ai/developers/rest-api-reference/inference/images
+# Edits do not document a byte cap for inline data URIs; keep host-safe limits
+# well below the Files API 50 MB upload ceiling.
+IMAGE_EDIT_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+IMAGE_EDIT_MAX_BYTES = 10 * 1024 * 1024  # 10 MB per image (pre-encoding)
+IMAGE_EDIT_MAX_TOTAL_BYTES = 20 * 1024 * 1024  # 20 MB aggregate across refs
+IMAGE_EDIT_MAX_IMAGES = 5  # multi-image editing cap
+# Models shown with /v1/images/edits in xAI docs (editing + Files API examples).
+IMAGE_EDIT_MODEL_PREFIXES = (
+    "grok-imagine-image-2.0",
+    "grok-imagine-image-quality",
+)
 
 # Live search modes (xAI Responses API server tools)
 LIVE_SEARCH_OFF = "off"
