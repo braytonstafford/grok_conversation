@@ -127,12 +127,14 @@ class OpenAIConversationEntity(
         if not api_ids:
             self._attr_supported_features = conversation.ConversationEntityFeature(0)
             return
-        try:
-            llm.async_get_api(self.hass, api_ids[0])
+        # Discovery only: async_get_api requires llm_context and must be awaited,
+        # so it is unsuitable for this sync feature-flag check (#49).
+        registered = {api.id for api in llm.async_get_apis(self.hass)}
+        if any(api_id in registered for api_id in api_ids):
             self._attr_supported_features = (
                 conversation.ConversationEntityFeature.CONTROL
             )
-        except Exception:  # noqa: BLE001
+        else:
             self._attr_supported_features = conversation.ConversationEntityFeature(0)
 
     async def async_will_remove_from_hass(self) -> None:

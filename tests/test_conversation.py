@@ -3,12 +3,13 @@
 from __future__ import annotations
 
 from typing import Any
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import openai
 import voluptuous as vol
 from homeassistant.components import conversation
 from homeassistant.components.conversation.chat_log import ChatLog
+from homeassistant.const import CONF_LLM_HASS_API
 from homeassistant.core import Context, HomeAssistant
 from homeassistant.helpers import llm
 from pytest_homeassistant_custom_component.common import MockConfigEntry
@@ -16,7 +17,11 @@ from pytest_homeassistant_custom_component.common import MockConfigEntry
 from custom_components.grok_conversation.const import (
     CONF_CHAT_MODEL,
     CONF_FALLBACK_MODEL,
+    CONF_INTERACTION_MODE,
     DOMAIN,
+    MODE_CHAT_ONLY,
+    MODE_PIPELINE,
+    MODE_TOOLS,
 )
 
 # HA 2026.10+; absent on 2026.7–2026.9.
@@ -302,3 +307,278 @@ async def test_invalid_tool_argument_json_returns_error(
     tool_msgs = [m for m in second_kwargs["messages"] if m.get("role") == "tool"]
     assert tool_msgs
     assert "Invalid tool arguments JSON" in tool_msgs[0]["content"]
+
+
+CONTROL = conversation.ConversationEntityFeature.CONTROL
+NO_CONTROL = conversation.ConversationEntityFeature(0)
+
+
+class _NamedAPI(llm.API):
+    """Minimal registered LLM API for multi-API control tests."""
+
+    def __init__(self, hass: HomeAssistant, api_id: str, name: str) -> None:
+        super().__init__(hass=hass, id=api_id, name=name)
+
+    async def async_get_api_instance(self, llm_context: llm.LLMContext) -> llm.APIInstance:
+        return llm.APIInstance(
+            api=self,
+            api_prompt="",
+            llm_context=llm_context,
+            tools=[],
+        )
+
+
+def _supported_features(
+    hass: HomeAssistant, entry: MockConfigEntry
+) -> conversation.ConversationEntityFeature:
+    entity = _conversation_entity(hass, entry)
+    state = hass.states.get(entity.entity_id)
+    assert state is not None
+    return state.attributes["supported_features"]
+
+
+async def _reload_with_options(
+    hass: HomeAssistant,
+    entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+    **updates: object,
+) -> None:
+    """Update options and reload so _update_control_feature re-runs."""
+    hass.config_entries.async_update_entry(
+        entry, options={**dict(entry.options), **updates}
+    )
+    with (
+        patch(
+            "custom_components.grok_conversation.openai.AsyncOpenAI",
+            return_value=mock_openai_client,
+        ),
+        patch(
+            "custom_components.grok_conversation.async_validate_voice_access",
+            return_value=(True, "ok"),
+        ),
+        patch(
+            "custom_components.grok_conversation.get_async_client",
+            return_value=None,
+        ),
+    ):
+        assert await hass.config_entries.async_reload(entry.entry_id)
+        await hass.async_block_till_done()
+    entry.runtime_data = mock_openai_client
+
+
+async def test_control_feature_with_registered_assist_api(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """Tools mode + registered assist API advertises CONTROL (#49)."""
+    assert llm.LLM_API_ASSIST in {api.id for api in llm.async_get_apis(hass)}
+    assert _supported_features(hass, mock_config_entry) == NO_CONTROL
+
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_TOOLS,
+            CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == CONTROL
+
+
+async def test_control_feature_absent_without_llm_api(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+) -> None:
+    """Tools mode without llm_hass_api does not advertise CONTROL."""
+    assert mock_config_entry.options.get(CONF_INTERACTION_MODE) == MODE_TOOLS
+    assert CONF_LLM_HASS_API not in mock_config_entry.options
+    assert _supported_features(hass, mock_config_entry) == NO_CONTROL
+
+
+async def test_control_feature_invalid_api_not_advertised(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """Configured but unregistered API ids do not advertise CONTROL."""
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_TOOLS,
+            CONF_LLM_HASS_API: ["not-a-registered-api"],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == NO_CONTROL
+
+
+async def test_control_feature_chat_only_not_advertised(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """Chat-only mode never advertises CONTROL even with assist selected."""
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_CHAT_ONLY,
+            CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == NO_CONTROL
+
+
+async def test_control_feature_multiple_apis_any_registered(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """CONTROL when any configured API is registered (multi-select)."""
+    unregister = llm.async_register_api(hass, _NamedAPI(hass, "custom_tools", "Custom"))
+    try:
+        await _reload_with_options(
+            hass,
+            mock_config_entry,
+            mock_openai_client,
+            **{
+                CONF_INTERACTION_MODE: MODE_TOOLS,
+                CONF_LLM_HASS_API: ["missing-api", "custom_tools"],
+            },
+        )
+        assert _supported_features(hass, mock_config_entry) == CONTROL
+
+        await _reload_with_options(
+            hass,
+            mock_config_entry,
+            mock_openai_client,
+            **{
+                CONF_INTERACTION_MODE: MODE_TOOLS,
+                CONF_LLM_HASS_API: [llm.LLM_API_ASSIST, "custom_tools"],
+            },
+        )
+        assert _supported_features(hass, mock_config_entry) == CONTROL
+    finally:
+        unregister()
+
+
+async def test_control_feature_options_update_transitions(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """Options reload transitions set and clear CONTROL appropriately."""
+    assert _supported_features(hass, mock_config_entry) == NO_CONTROL
+
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_TOOLS,
+            CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == CONTROL
+
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_PIPELINE,
+            CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == CONTROL
+
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_CHAT_ONLY,
+            CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == NO_CONTROL
+
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_TOOLS,
+            CONF_LLM_HASS_API: ["still-missing"],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == NO_CONTROL
+
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_TOOLS,
+            CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == CONTROL
+
+
+async def test_control_feature_does_not_break_tool_calling(
+    hass: HomeAssistant,
+    mock_config_entry: MockConfigEntry,
+    mock_openai_client: MagicMock,
+) -> None:
+    """Advertising CONTROL must not change the shared chat-log tool loop."""
+    await _reload_with_options(
+        hass,
+        mock_config_entry,
+        mock_openai_client,
+        **{
+            CONF_INTERACTION_MODE: MODE_TOOLS,
+            CONF_LLM_HASS_API: [llm.LLM_API_ASSIST],
+        },
+    )
+    assert _supported_features(hass, mock_config_entry) == CONTROL
+
+    tool = _RecordingTool()
+    entity = _conversation_entity(hass, mock_config_entry)
+    mock_openai_client.chat.completions.create = AsyncMock(
+        side_effect=[
+            _completion_response(
+                tool_calls=[_tool_call("test_light", '{"action":"turn_on"}')]
+            ),
+            _completion_response("The light is on."),
+        ]
+    )
+
+    chat_log = ChatLog(hass=hass, conversation_id="conv-control-tools")
+    chat_log.llm_api = _mock_llm_api(hass, tool)
+    chat_log.async_add_user_content(
+        conversation.UserContent(content="Turn on the light")
+    )
+    messages = [
+        {"role": "system", "content": "You are helpful."},
+        {"role": "user", "content": "Turn on the light"},
+    ]
+    await entity._async_handle_chat_log(  # noqa: SLF001
+        chat_log,
+        model="grok-4.3-latest",
+        options={
+            CONF_CHAT_MODEL: "grok-4.3-latest",
+            CONF_FALLBACK_MODEL: "grok-4.6",
+        },
+        messages=messages,
+        agent_id=entity.entity_id,
+        service="conversation",
+        fallback_model="grok-4.6",
+    )
+
+    assert tool.calls == [{"action": "turn_on"}]
+    assert mock_openai_client.chat.completions.create.await_count == 2
